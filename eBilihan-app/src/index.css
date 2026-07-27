@@ -13,7 +13,8 @@
   --color-brand-gold-light: #eafadf;
   --color-brand-surface: #f0f3f8;
 
-  --font-sans: system-ui, "Segoe UI", Roboto, sans-serif;
+  /* Self-hosted via @fontsource/inter (see main.tsx) — weights 400/500/600/700. */
+  --font-sans: "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
 }
 
 :root {
@@ -23,7 +24,7 @@
 body {
   margin: 0;
   font-family: var(--font-sans);
-  background: var(--color-brand-surface);
+  background: #fff;
   color: var(--color-brand-ink);
 }
 

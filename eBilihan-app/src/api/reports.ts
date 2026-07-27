@@ -1,4 +1,33 @@
 import { api } from "./client";
+import type { PsgcItem } from "@/types";
+
+/**
+ * eReport's OWN region/province/municipality/barangay codes — NOT PSGC Cloud's (see
+ * src/api/locations.ts / components/shared/LocationPicker.tsx, used elsewhere for
+ * registration). submit_complaint rejects PSGC Cloud codes outright; confirmed live
+ * against the real eReport API. Used by ReportsPage's own location picker only.
+ */
+export async function listReportRegions() {
+  const { data } = await api.get<PsgcItem[]>("/reports/datasets/regions");
+  return data;
+}
+export async function listReportProvinces(regionCode: string) {
+  const { data } = await api.get<PsgcItem[]>("/reports/datasets/provinces", { params: { regionCode } });
+  return data;
+}
+export async function listReportMunicipalities(provinceCode: string) {
+  const { data } = await api.get<PsgcItem[]>("/reports/datasets/municipalities", { params: { provinceCode } });
+  return data;
+}
+export async function listReportBarangays(municipalityCode: string) {
+  const { data } = await api.get<PsgcItem[]>("/reports/datasets/barangays", { params: { municipalityCode } });
+  return data;
+}
+/** Replaces the earlier best-guess category list — these are the 12 real accepted `report_type` codes. */
+export async function listReportTypes() {
+  const { data } = await api.get<PsgcItem[]>("/reports/datasets/report-types");
+  return data;
+}
 
 export async function requestReportOtp(email: string) {
   const { data } = await api.post("/reports/otp/request", { email });

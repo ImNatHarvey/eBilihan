@@ -114,6 +114,89 @@ router.get("/", async (req, res) => {
   }
 });
 
+/**
+ * eReport's own location dataset — NOT the same codes as PSGC Cloud (src/routes/locations.ts).
+ * Confirmed live (2026-07-28): submit_complaint rejects PSGC Cloud's codes outright
+ * ("Region code does not exist", etc.) because eReport keeps its own PSGC-derived code
+ * list with different numbering (e.g. 9-digit "010000000" here vs PSGC Cloud's 10-digit
+ * "0100000000" for the same region). These endpoints were named in the reference
+ * screenshots' sidebar ("Datasets") but never opened — found by probing
+ * /api/integration/datasets/{regions,provinces,municipalities,barangays,report_types}
+ * against the real eReport API with a valid integration token.
+ */
+type JsonApiItem = { id: string; attributes: Record<string, unknown> };
+function unwrapJsonApi(data: { data: JsonApiItem[] }): { code: string; name: string }[] {
+  return data.data.map((item) => ({ code: item.id, name: String(item.attributes.name) }));
+}
+
+router.get("/datasets/regions", async (_req, res) => {
+  try {
+    const integrationToken = await getEreportIntegrationToken();
+    const response = await ereportClient.get("/api/integration/datasets/regions", {
+      headers: { Authorization: `Bearer ${integrationToken}` },
+    });
+    res.json(unwrapJsonApi(response.data));
+  } catch (err) {
+    res.status(502).json({ error: "eReport regions lookup failed", detail: (err as Error).message });
+  }
+});
+
+router.get("/datasets/provinces", async (req, res) => {
+  try {
+    const integrationToken = await getEreportIntegrationToken();
+    const response = await ereportClient.get("/api/integration/datasets/provinces", {
+      headers: { Authorization: `Bearer ${integrationToken}` },
+      params: { region_code: req.query.regionCode },
+    });
+    res.json(unwrapJsonApi(response.data));
+  } catch (err) {
+    res.status(502).json({ error: "eReport provinces lookup failed", detail: (err as Error).message });
+  }
+});
+
+router.get("/datasets/municipalities", async (req, res) => {
+  try {
+    const integrationToken = await getEreportIntegrationToken();
+    const response = await ereportClient.get("/api/integration/datasets/municipalities", {
+      headers: { Authorization: `Bearer ${integrationToken}` },
+      params: { province_code: req.query.provinceCode },
+    });
+    res.json(unwrapJsonApi(response.data));
+  } catch (err) {
+    res.status(502).json({ error: "eReport municipalities lookup failed", detail: (err as Error).message });
+  }
+});
+
+router.get("/datasets/barangays", async (req, res) => {
+  try {
+    const integrationToken = await getEreportIntegrationToken();
+    const response = await ereportClient.get("/api/integration/datasets/barangays", {
+      headers: { Authorization: `Bearer ${integrationToken}` },
+      params: { municipality_code: req.query.municipalityCode },
+    });
+    res.json(unwrapJsonApi(response.data));
+  } catch (err) {
+    res.status(502).json({ error: "eReport barangays lookup failed", detail: (err as Error).message });
+  }
+});
+
+/** Real report categories (12 confirmed: scam, gas_station_concerns, red_tape, child_abuse, women_abuse, OFW_APP, overpricing, fire, "Senior Citizen", accident, crime, illegal_dumping) — replaces the earlier best-guess list. */
+router.get("/datasets/report-types", async (_req, res) => {
+  try {
+    const integrationToken = await getEreportIntegrationToken();
+    const response = await ereportClient.get("/api/integration/datasets/report_types", {
+      headers: { Authorization: `Bearer ${integrationToken}` },
+    });
+    const types = (response.data as { data: JsonApiItem[] }).data.map((item) => ({
+      code: String(item.attributes.code),
+      name: String(item.attributes.name),
+    }));
+    res.json(types);
+  } catch (err) {
+    res.status(502).json({ error: "eReport report-types lookup failed", detail: (err as Error).message });
+  }
+});
+
 router.get("/:caseNumber", async (req, res) => {
   const reportViewToken = reportViewTokens.get(req.ownerId!);
   if (!reportViewToken) return res.status(401).json({ error: "Confirm OTP via /reports/otp/confirm first" });

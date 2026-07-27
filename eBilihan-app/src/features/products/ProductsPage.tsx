@@ -4,7 +4,6 @@ import { Plus, Search, TriangleAlert, Package, ChevronRight, ShoppingCart } from
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, StatTile } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { ProductFormDialog } from "./ProductFormDialog";
 import { listProducts } from "@/api/products";
 import type { Product } from "@/types";
@@ -14,6 +13,19 @@ function shortCode(product: Product): string {
   const initials = product.name.replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase() || "PR";
   const digits = product.barcode.slice(-4).padStart(4, "0");
   return `${initials}${digits.slice(0, 2)}-${digits.slice(2)}`;
+}
+
+/** Deterministic color per category name, so tags read as distinct at a glance. */
+const TAG_COLORS = [
+  "bg-brand-blue-light text-brand-blue",
+  "bg-brand-gold-light text-green-700",
+  "bg-brand-red-light text-brand-red",
+  "bg-purple-50 text-purple-700",
+];
+function tagColor(type: string): string {
+  let hash = 0;
+  for (const char of type) hash = (hash * 31 + char.charCodeAt(0)) % TAG_COLORS.length;
+  return TAG_COLORS[hash];
 }
 
 /** §2 — Product Management: CRUD + barcode scan/generate. UI structure ported from the ebilihan-hackathon prototype's ProductListPage. */
@@ -36,10 +48,7 @@ export function ProductsPage() {
   return (
     <div className="flex flex-col gap-3 p-4 pb-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-black text-brand-ink">Products</h1>
-          <p className="text-xs text-brand-ink/50">{products.length} item(s)</p>
-        </div>
+        <h1 className="text-lg font-bold text-brand-ink">Product Management</h1>
         <Button size="icon" onClick={() => setFormTarget("new")} aria-label="New product">
           <Plus />
         </Button>
@@ -49,7 +58,7 @@ export function ProductsPage() {
         <div className="grid grid-cols-3 gap-2">
           <StatTile label="Total Products" value={String(products.length)} tone="blue" icon={<Package className="h-3.5 w-3.5" />} />
           <StatTile label="Total Items" value={String(totalItems)} tone="green" icon={<ShoppingCart className="h-3.5 w-3.5" />} />
-          <StatTile label="Categories" value={String(categoryCount)} tone="yellow" icon={<TriangleAlert className="h-3.5 w-3.5" />} />
+          <StatTile label="Categories" value={String(categoryCount)} tone="neutral" icon={<TriangleAlert className="h-3.5 w-3.5" />} />
         </div>
       )}
 
@@ -72,22 +81,24 @@ export function ProductsPage() {
                   </span>
 
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-bold text-brand-ink">{product.name}</p>
-                      <p className="shrink-0 text-sm font-black text-brand-blue">₱{product.sellingPrice.toFixed(2)}</p>
+                    <p className="truncate text-sm font-bold text-brand-ink">{product.name}</p>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <p className="font-mono text-xs text-brand-ink/40">{shortCode(product)}</p>
+                      <span className={`rounded-full px-1.5 py-0.5 text-xs font-semibold ${tagColor(product.type)}`}>{product.type}</span>
                     </div>
-                    <div className="mt-0.5 flex items-center gap-1.5">
-                      <p className="font-mono text-[10px] text-brand-ink/40">{shortCode(product)}</p>
-                      <Badge variant="outline" className="px-1.5 py-0 text-[9px]">
-                        {product.type}
-                      </Badge>
+                    <div className="mt-1.5">
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-bold ${
+                          low ? "bg-amber-50 text-amber-700" : "bg-green-50 text-green-700"
+                        }`}
+                      >
+                        {product.quantity} pcs in stock
+                      </span>
                     </div>
-                    <p className={`mt-1 text-[11px] font-semibold ${low ? "text-yellow-700" : "text-brand-ink/50"}`}>
-                      {product.quantity} pcs in stock
-                    </p>
                   </div>
 
-                  <ChevronRight className="h-4 w-4 shrink-0 text-brand-ink/30" />
+                  <p className="shrink-0 text-sm font-bold text-brand-ink">₱{product.sellingPrice.toFixed(2)}</p>
+                  <ChevronRight className="h-5 w-5 shrink-0 text-brand-ink/50" />
                 </CardContent>
               </Card>
             </button>

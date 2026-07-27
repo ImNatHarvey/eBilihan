@@ -33,17 +33,26 @@ function CardFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement
   return <div className={cn("flex items-center p-4 pt-0", className)} {...props} />;
 }
 
+/**
+ * The four "secondary colors" from eBilihanReference/eGov Light Colors.png — used as
+ * full-card backgrounds (not just a small icon badge) across Home, Products, and Wallet.
+ */
 const statTone = {
-  blue: { bg: "bg-blue-50", text: "text-blue-700", iconBg: "bg-blue-100" },
-  green: { bg: "bg-green-50", text: "text-green-700", iconBg: "bg-green-100" },
-  yellow: { bg: "bg-amber-50", text: "text-amber-700", iconBg: "bg-amber-100" },
-  red: { bg: "bg-red-50", text: "text-brand-red", iconBg: "bg-red-100" },
+  blue: { bg: "bg-brand-blue-light", iconText: "text-brand-blue" },
+  green: { bg: "bg-brand-gold-light", iconText: "text-green-700" },
+  red: { bg: "bg-brand-red-light", iconText: "text-brand-red" },
+  neutral: { bg: "bg-brand-surface", iconText: "text-brand-ink/60" },
 } as const;
 
 /**
- * Highlighted KPI tile — soft tinted background + icon-in-circle, used across Home and
- * Products so the summary cards read as distinct at a glance instead of a wall of
- * identical white boxes.
+ * Highlighted KPI tile — the tone color fills the whole card (not just the icon), text
+ * stays neutral black/brand-ink throughout (color is for the card + icon accent only,
+ * not the numbers), and the icon sits to the right of the label/value, larger, in a
+ * soft white circle. Used across Home, Products, and Wallet's summary rows.
+ *
+ * Fixed `min-h` so every tile is the same size everywhere — some stats have a `hint`
+ * line and some don't, which (without a fixed height) made cards with a hint render
+ * taller than ones without, both within a single grid row and page-to-page.
  */
 function StatTile({
   label,
@@ -60,13 +69,17 @@ function StatTile({
 }) {
   const t = statTone[tone];
   return (
-    <div className={cn("rounded-2xl p-3 shadow-sm", t.bg)}>
-      <div className="flex items-center justify-between">
-        {icon && <span className={cn("flex h-7 w-7 items-center justify-center rounded-full", t.iconBg, t.text)}>{icon}</span>}
+    <div className={cn("flex min-h-[88px] items-center justify-between gap-2 rounded-2xl p-3 shadow-sm", t.bg)}>
+      <div className="min-w-0">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-ink/60">{label}</p>
+        <p className="mt-1 text-lg font-bold tabular-nums text-brand-ink">{value}</p>
+        {hint && <p className="mt-0.5 text-[10px] text-brand-ink/50">{hint}</p>}
       </div>
-      <p className={cn("mt-2 text-lg font-black tabular-nums", t.text)}>{value}</p>
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-brand-ink/50">{label}</p>
-      {hint && <p className="mt-0.5 text-[10px] text-brand-ink/40">{hint}</p>}
+      {icon && (
+        <span className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white shadow-md [&>svg]:h-5 [&>svg]:w-5", t.iconText)}>
+          {icon}
+        </span>
+      )}
     </div>
   );
 }

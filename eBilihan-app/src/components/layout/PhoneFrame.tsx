@@ -26,7 +26,7 @@ export function PhoneFrame({ children, className }: { children: ReactNode; class
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
 
   if (Capacitor.isNativePlatform()) {
-    return <div className={cn("flex h-dvh flex-col bg-brand-surface", className)}>{children}</div>;
+    return <div className={cn("flex h-dvh flex-col bg-white", className)}>{children}</div>;
   }
 
   return (
@@ -34,7 +34,11 @@ export function PhoneFrame({ children, className }: { children: ReactNode; class
       <div
         ref={setContainer}
         className={cn(
-          "relative flex h-dvh w-full max-w-md flex-col overflow-hidden bg-brand-surface",
+          // Plain white, not brand-surface (#F0F3F8) — that's also one of the four
+          // secondary tint colors used for StatTile card backgrounds, so using it as
+          // the page background made the "neutral" tone (and to a lesser extent the
+          // other pale tints) blend invisibly into the page instead of standing out.
+          "relative flex h-dvh w-full max-w-md flex-col overflow-hidden bg-white",
           // `transform` (even a no-op one) makes this the containing block for any
           // `position: fixed` descendant — i.e. Dialog overlays/content — instead of
           // the browser viewport. Only needed for the md+ bezel; native/full-bleed
