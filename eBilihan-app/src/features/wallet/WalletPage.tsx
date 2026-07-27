@@ -1,29 +1,25 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
-import { Plus } from "lucide-react";
+import { Plus, Landmark, HandCoins, PiggyBank, Banknote, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, StatTile } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { getWalletSummary } from "@/api/wallet";
 import { listLoans } from "@/api/loans";
+import { listOrders } from "@/api/orders";
 import { LoanVerificationFlow } from "./LoanVerificationFlow";
-
-const CHART_COLORS = ["#0241e8", "#e9c400", "#a80e13"];
 
 export function WalletPage() {
   const queryClient = useQueryClient();
   const { data: summary } = useQuery({ queryKey: ["wallet-summary"], queryFn: getWalletSummary });
   const { data: loans = [] } = useQuery({ queryKey: ["loans"], queryFn: listLoans });
+  const { data: orders = [] } = useQuery({ queryKey: ["orders"], queryFn: listOrders });
   const [newLoanOpen, setNewLoanOpen] = useState(false);
 
-  const chartData = summary
-    ? [
-        { name: "Cash Collected", value: summary.cashCollected },
-        { name: "Outstanding Loans", value: summary.outstandingLoans },
-      ]
-    : [];
+  const transactions = [...orders]
+    .filter((o) => o.paymentStatus === "paid")
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   function handleDialogChange(open: boolean) {
     setNewLoanOpen(open);
@@ -35,81 +31,78 @@ export function WalletPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <h1 className="text-lg font-semibold">Wallet</h1>
+      <h1 className="text-lg font-bold text-brand-ink">Wallet Management</h1>
 
       <div className="grid grid-cols-3 gap-2">
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-xs text-brand-ink/50">Assets</p>
-            <p className="text-lg font-semibold">₱{summary?.assets.toFixed(0) ?? "—"}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-xs text-brand-ink/50">Liabilities</p>
-            <p className="text-lg font-semibold">₱{summary?.liabilities.toFixed(0) ?? "—"}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <p className="text-xs text-brand-ink/50">Equity</p>
-            <p className="text-lg font-semibold">₱{summary?.equity.toFixed(0) ?? "—"}</p>
-          </CardContent>
-        </Card>
+        <StatTile label="Assets" value={`₱${summary?.assets.toFixed(0) ?? "—"}`} tone="blue" icon={<Landmark />} />
+        <StatTile label="Liabilities" value={`₱${summary?.liabilities.toFixed(0) ?? "—"}`} tone="red" icon={<HandCoins />} />
+        <StatTile label="Equity" value={`₱${summary?.equity.toFixed(0) ?? "—"}`} tone="green" icon={<PiggyBank />} />
       </div>
 
-      {summary && summary.chainEntryCount > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Cash vs. Outstanding Loans</CardTitle>
-          </CardHeader>
-          <CardContent className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={chartData} dataKey="value" nameKey="name" innerRadius={40} outerRadius={70}>
-                  {chartData.map((_, i) => (
-                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(value) => `₱${Number(value).toFixed(2)}`} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      )}
-
-      <div className="flex items-center justify-between">
-        <h2 className="font-medium">Loans (Pautang)</h2>
-        <Dialog open={newLoanOpen} onOpenChange={handleDialogChange}>
-          <DialogTrigger asChild>
-            <Button size="sm">
-              <Plus /> New Loan
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle>New Loan</DialogTitle>
-            </DialogHeader>
-            <LoanVerificationFlow />
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        {loans.map((loan) => (
-          <Card key={loan.id}>
-            <CardContent className="flex items-center justify-between pt-4">
-              <div>
-                <p className="font-medium">{loan.borrowerName}</p>
-                <p className="text-xs text-brand-ink/50">Balance: PHP {loan.balance.toFixed(2)} of {loan.principal.toFixed(2)}</p>
+      <div>
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-brand-ink">Loans (Pautang)</h2>
+          <Dialog open={newLoanOpen} onOpenChange={handleDialogChange}>
+            <DialogTrigger asChild>
+              <Button size="sm">
+                <Plus /> New Loan
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>New Loan</DialogTitle>
+              </DialogHeader>
+              <div className="max-h-[60vh] overflow-y-auto">
+                <LoanVerificationFlow />
               </div>
-              <Badge variant={loan.status === "active" ? "default" : loan.status === "paid" ? "success" : "danger"}>
-                {loan.status}
-              </Badge>
-            </CardContent>
-          </Card>
-        ))}
-        {loans.length === 0 && <p className="text-sm text-brand-ink/50">No loans yet.</p>}
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        <div className="mt-2 flex flex-col gap-2">
+          {loans.map((loan) => (
+            <Card key={loan.id}>
+              <CardContent className="flex items-center justify-between pt-4">
+                <div>
+                  <p className="font-medium">{loan.borrowerName}</p>
+                  <p className="text-xs text-brand-ink/50">Balance: PHP {loan.balance.toFixed(2)} of {loan.principal.toFixed(2)}</p>
+                </div>
+                <Badge variant={loan.status === "active" ? "default" : loan.status === "paid" ? "success" : "danger"}>
+                  {loan.status}
+                </Badge>
+              </CardContent>
+            </Card>
+          ))}
+          {loans.length === 0 && <p className="text-sm text-brand-ink/50">No loans yet.</p>}
+        </div>
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-brand-ink">Transaction History</h2>
+        <div className="flex flex-col gap-2">
+          {transactions.slice(0, 8).map((order) => (
+            <Card key={order.id}>
+              <CardContent className="flex items-center gap-3 pt-4">
+                <span
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
+                    order.paymentMethod === "cash" ? "bg-brand-gold-light text-green-700" : "bg-brand-blue-light text-brand-blue"
+                  }`}
+                >
+                  {order.paymentMethod === "cash" ? <Banknote className="h-4 w-4" /> : <Smartphone className="h-4 w-4" />}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-brand-ink">{order.items.length} item(s)</p>
+                  <p className="text-xs text-brand-ink/40">{new Date(order.createdAt).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-brand-ink">₱{order.total.toFixed(2)}</p>
+                  <p className="text-[10px] font-semibold uppercase text-brand-ink/40">{order.paymentMethod === "cash" ? "Cash" : "eGovPay"}</p>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+          {transactions.length === 0 && <p className="text-sm text-brand-ink/50">No transactions yet.</p>}
+        </div>
       </div>
     </div>
   );

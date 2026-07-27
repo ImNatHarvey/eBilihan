@@ -34,6 +34,8 @@ export function POSView() {
 
   return (
     <div className="flex h-full flex-col p-4">
+      <h1 className="mb-3 shrink-0 text-lg font-bold text-brand-ink">Order Management</h1>
+
       <div className="flex shrink-0 flex-col gap-2">
         <Button size="lg" onClick={handleScan} disabled={isScanning}>
           <ScanLine /> {isScanning ? "Scanning..." : "Scan Product Barcode"}
@@ -84,7 +86,7 @@ export function POSView() {
 
       {items.length > 0 && (
         <div className="mt-3 shrink-0 rounded-xl border border-brand-ink/10 bg-white p-3 shadow-sm">
-          <div className="mb-2 flex items-center justify-between text-base font-black text-brand-ink">
+          <div className="mb-2 flex items-center justify-between text-base font-bold text-brand-ink">
             <span>Total</span>
             <span>₱{total().toFixed(2)}</span>
           </div>

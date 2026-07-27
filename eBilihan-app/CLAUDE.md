@@ -228,15 +228,23 @@ request/response shape — some of these are easy to get subtly wrong from memor
   `verify/confirm` (returns a **separate** `report_view_token`, header
   `X-EReport-View-Token`, needed only for `GET /reports` and
   `GET /reports/{case_number}` — submitting a complaint does not need it).
-  `src/features/reports/ReportsPage.tsx` gets its Region/Province/Municipality/Barangay
-  codes from the shared `LocationPicker` (PSGC Cloud — see below), **not** from
-  eReport's own `Region/Province/Municipality/Barangay List` dataset endpoints (still
-  unwired — their request/response shape was never captured). Its category dropdown's
-  `report_type` values (`crime`, `scam`, `fraud`, `extortion`, `other`) are a **best
-  guess** too: eReport's own `Report Type List` dataset (which would enumerate the real
-  accepted codes) was named in the reference screenshots' sidebar but never opened, so
-  only `"crime"` is directly confirmed from the Submit Complaint example. If eReport
-  rejects a category, that surfaces as a real (not faked) error via `lib/apiError.ts`.
+  **eReport has its own region/province/municipality/barangay code list — it is NOT
+  PSGC Cloud's codes**, despite both nominally being "PSGC". Confirmed live
+  (2026-07-28): `submit_complaint` flatly rejects PSGC Cloud codes ("Region code does
+  not exist", etc.) because eReport's codes use different numbering for the same area
+  (9-digit `"010000000"` for Region I here vs. PSGC Cloud's 10-digit `"0100000000"`).
+  The real dataset endpoints (named in the reference screenshots' sidebar but never
+  opened until probed live) are `GET {base}/api/integration/datasets/{regions,
+  provinces,municipalities,barangays,report_types}` — `provinces` etc. take a
+  `region_code`/`province_code`/`municipality_code` query param and return
+  `{ data: [{ id, attributes: { name, ... } }] }` (JSON:API shape). Proxied at
+  `server/src/routes/reports.ts` `/datasets/*` and consumed by
+  `src/features/reports/ReportLocationPicker.tsx` — **do not** reuse the shared
+  `LocationPicker` (PSGC Cloud) for Reports, they are incompatible code systems.
+  `report_type` has 12 real confirmed values (`scam`, `gas_station_concerns`,
+  `red_tape`, `child_abuse`, `women_abuse`, `OFW_APP`, `overpricing`, `fire`,
+  `"Senior Citizen"`, `accident`, `crime`, `illegal_dumping`), fetched live via
+  `listReportTypes()` rather than hardcoded.
 
 ## eGovchain — explicitly not a real integration
 
@@ -294,9 +302,10 @@ code — replace its internals (only) once real eGovchain API docs exist.
 Registration's Location step (Region → Province → City/Municipality → Barangay) is
 backed by **PSGC Cloud** (`https://psgc.cloud/api`), a free public REST API for the
 Philippine Standard Geographic Code — unrelated to the eGOV APIs suite, added because
-the user asked for "a PSGC-like API" and eReport's own dataset endpoints (`Region List`,
-`Province List by Params`, etc.) were never captured in the reference screenshots (only
-their names appeared in a sidebar, not their request/response shape).
+the user asked for "a PSGC-like API". **This is a different code system from eReport's
+own region/province/municipality/barangay codes** (see the eReport bullet above) —
+don't cross-wire them; a code that's valid in one is very likely invalid in the other
+despite both nominally being "PSGC".
 
 Verified live by fetching it directly (2026-07-28), since nothing in
 `eBilihanReference/` covers it:
@@ -311,10 +320,10 @@ Verified live by fetching it directly (2026-07-28), since nothing in
 Proxied through `server/src/routes/locations.ts` (unauthenticated — registration happens
 before a session token exists) and consumed by `src/components/shared/LocationPicker.tsx`
 + `src/api/locations.ts`. `StoreOwner.location` (`server/src/store/db.ts` /
-`src/types/index.ts`) captures the full chain (codes + names) — this could later prefill
-`ReportsPage`'s region/province/municipality/barangay code fields for eReport
-`submit_complaint`, since both need the same PSGC codes, though that reuse isn't wired
-up yet.
+`src/types/index.ts`) captures the full chain (codes + names) for the store's own
+address — **not** reusable for eReport's location fields, which need
+`ReportLocationPicker` (`src/features/reports/ReportLocationPicker.tsx`) and eReport's
+own `/reports/datasets/*` endpoints instead (see the eReport bullet above).
 
 ## Brand
 

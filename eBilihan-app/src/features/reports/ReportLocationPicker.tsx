@@ -1,12 +1,23 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Label } from "@/components/ui/label";
-import { listRegions, listProvinces, listCitiesMunicipalities, listBarangays } from "@/api/locations";
-import type { PsgcItem, StoreLocation } from "@/types";
+import { listReportRegions, listReportProvinces, listReportMunicipalities, listReportBarangays } from "@/api/reports";
+import type { PsgcItem } from "@/types";
 
-type LocationPickerProps = {
-  value: StoreLocation | null;
-  onChange: (location: StoreLocation | null) => void;
+export type ReportLocation = {
+  regionCode: string;
+  regionName: string;
+  provinceCode: string;
+  provinceName: string;
+  municipalityCode: string;
+  municipalityName: string;
+  barangayCode: string;
+  barangayName: string;
+};
+
+type Props = {
+  value: ReportLocation | null;
+  onChange: (location: ReportLocation | null) => void;
 };
 
 function Select({
@@ -43,40 +54,37 @@ function Select({
 }
 
 /**
- * Cascading Region -> Province -> City/Municipality -> Barangay picker, backed by PSGC
- * Cloud (see src/api/locations.ts). Used on the registration "Location" step.
+ * Region -> Province -> Municipality -> Barangay picker backed by eReport's OWN
+ * dataset endpoints (server/src/routes/reports.ts `/datasets/*`) — a different code
+ * system from PSGC Cloud (see components/shared/LocationPicker.tsx, used for
+ * registration). Using the wrong one is exactly why report submission was failing
+ * with "Region code does not exist" etc.
  */
-export function LocationPicker({ value, onChange }: LocationPickerProps) {
+export function ReportLocationPicker({ value, onChange }: Props) {
   const [region, setRegion] = useState<PsgcItem | null>(null);
   const [province, setProvince] = useState<PsgcItem | null>(null);
-  const [city, setCity] = useState<PsgcItem | null>(null);
+  const [municipality, setMunicipality] = useState<PsgcItem | null>(null);
 
-  const { data: regions = [] } = useQuery({ queryKey: ["psgc-regions"], queryFn: listRegions });
+  const { data: regions = [] } = useQuery({ queryKey: ["ereport-regions"], queryFn: listReportRegions });
   const { data: provinces = [] } = useQuery({
-    queryKey: ["psgc-provinces", region?.code],
-    queryFn: () => listProvinces(region!.code),
+    queryKey: ["ereport-provinces", region?.code],
+    queryFn: () => listReportProvinces(region!.code),
     enabled: !!region,
   });
-  const { data: cities = [] } = useQuery({
-    queryKey: ["psgc-cities", province?.code],
-    queryFn: () => listCitiesMunicipalities(province!.code),
+  const { data: municipalities = [] } = useQuery({
+    queryKey: ["ereport-municipalities", province?.code],
+    queryFn: () => listReportMunicipalities(province!.code),
     enabled: !!province,
   });
   const { data: barangays = [] } = useQuery({
-    queryKey: ["psgc-barangays", city?.code],
-    queryFn: () => listBarangays(city!.code),
-    enabled: !!city,
+    queryKey: ["ereport-barangays", municipality?.code],
+    queryFn: () => listReportBarangays(municipality!.code),
+    enabled: !!municipality,
   });
 
-  /**
-   * Barangay is treated as optional: PSGC Cloud's barangay list is occasionally empty
-   * or slow for a given city/municipality, and hard-requiring it here was blocking
-   * Reports/Registration submission entirely whenever that happened. Region+Province+
-   * City alone is enough to call `onChange` with a complete-enough location; picking a
-   * barangay afterward just fills it in.
-   */
-  function emitLocation(selectedCity: PsgcItem | null, barangay?: PsgcItem) {
-    if (!region || !province || !selectedCity) {
+  /** Barangay is optional — Region+Province+Municipality alone is enough to submit (see LocationPicker.tsx for the same reasoning). */
+  function emitLocation(selectedMunicipality: PsgcItem | null, barangay?: PsgcItem) {
+    if (!region || !province || !selectedMunicipality) {
       onChange(null);
       return;
     }
@@ -85,8 +93,8 @@ export function LocationPicker({ value, onChange }: LocationPickerProps) {
       regionName: region.name,
       provinceCode: province.code,
       provinceName: province.name,
-      cityCode: selectedCity.code,
-      cityName: selectedCity.name,
+      municipalityCode: selectedMunicipality.code,
+      municipalityName: selectedMunicipality.name,
       barangayCode: barangay?.code ?? "",
       barangayName: barangay?.name ?? "",
     });
@@ -101,7 +109,7 @@ export function LocationPicker({ value, onChange }: LocationPickerProps) {
         onChange={(item) => {
           setRegion(item ?? null);
           setProvince(null);
-          setCity(null);
+          setMunicipality(null);
           onChange(null);
         }}
       />
@@ -112,17 +120,17 @@ export function LocationPicker({ value, onChange }: LocationPickerProps) {
         disabled={!region}
         onChange={(item) => {
           setProvince(item ?? null);
-          setCity(null);
+          setMunicipality(null);
           onChange(null);
         }}
       />
       <Select
-        label="City / Municipality"
-        items={cities}
-        value={city?.code ?? ""}
+        label="Municipality / City"
+        items={municipalities}
+        value={municipality?.code ?? ""}
         disabled={!province}
         onChange={(item) => {
-          setCity(item ?? null);
+          setMunicipality(item ?? null);
           emitLocation(item ?? null);
         }}
       />
@@ -130,8 +138,8 @@ export function LocationPicker({ value, onChange }: LocationPickerProps) {
         label="Barangay (optional)"
         items={barangays}
         value={value?.barangayCode ?? ""}
-        disabled={!city}
-        onChange={(barangay) => emitLocation(city, barangay)}
+        disabled={!municipality}
+        onChange={(barangay) => emitLocation(municipality, barangay)}
       />
     </div>
   );
