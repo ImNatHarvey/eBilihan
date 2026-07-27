@@ -1,9 +1,8 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { ShoppingCart, Package, Wallet, TriangleAlert, ArrowRight } from "lucide-react";
+import { ShoppingCart, Package, Wallet, TrendingUp, TriangleAlert, HandCoins, PiggyBank, ArrowRight, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatTile } from "@/components/ui/card";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { listOrders } from "@/api/orders";
 import { listProducts } from "@/api/products";
 import { getWalletSummary } from "@/api/wallet";
@@ -15,7 +14,61 @@ function isToday(iso: string): boolean {
   return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
 }
 
-/** Landing tab: today's snapshot + quick actions into the other four tabs. */
+/**
+ * Placeholder promo slides. Drop real images in `src/assets/banners/` (e.g.
+ * `banner-1.jpg`, `banner-2.jpg`) and swap each `image` below for an import — the
+ * carousel itself (dots, arrows, sizing) doesn't need to change.
+ */
+const BANNER_SLIDES = [
+  { title: "Grow your store with eGovPay", subtitle: "Accept GCash in seconds", tone: "from-brand-blue to-blue-700" },
+  { title: "Pautang made simple", subtitle: "Verified loans, zero paperwork", tone: "from-brand-red to-red-700" },
+  { title: "Track every peso", subtitle: "See sales & expenses in one place", tone: "from-brand-gold to-yellow-600" },
+];
+
+function BannerCarousel() {
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setIndex((i) => (i + 1) % BANNER_SLIDES.length), 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const slide = BANNER_SLIDES[index];
+
+  return (
+    <div className="relative h-24 shrink-0 overflow-hidden rounded-2xl">
+      <div className={`flex h-full flex-col justify-center bg-gradient-to-br ${slide.tone} px-4 text-white`}>
+        <p className="text-sm font-black">{slide.title}</p>
+        <p className="text-xs text-white/80">{slide.subtitle}</p>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setIndex((i) => (i - 1 + BANNER_SLIDES.length) % BANNER_SLIDES.length)}
+        className="absolute left-1 top-1/2 -translate-y-1/2 rounded-full bg-black/20 p-1 text-white"
+        aria-label="Previous"
+      >
+        <ChevronLeft className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        onClick={() => setIndex((i) => (i + 1) % BANNER_SLIDES.length)}
+        className="absolute right-1 top-1/2 -translate-y-1/2 rounded-full bg-black/20 p-1 text-white"
+        aria-label="Next"
+      >
+        <ChevronRight className="h-3.5 w-3.5" />
+      </button>
+
+      <div className="absolute bottom-1.5 left-1/2 flex -translate-x-1/2 gap-1">
+        {BANNER_SLIDES.map((_, i) => (
+          <span key={i} className={`h-1.5 w-1.5 rounded-full ${i === index ? "bg-white" : "bg-white/40"}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Landing tab: store snapshot + quick actions + promo carousel. Deliberately fits one screen, no scroll. */
 export function HomePage() {
   const navigate = useNavigate();
   const owner = useAuthStore((s) => s.owner);
@@ -28,41 +81,22 @@ export function HomePage() {
   const lowStock = products.filter((p) => p.quantity <= p.lowStockThreshold);
 
   return (
-    <div className="flex flex-col gap-4 p-4">
-      <div>
-        <p className="text-sm text-brand-ink/50">Magandang araw,</p>
-        <h1 className="text-xl font-black text-brand-ink">{owner?.fullName ?? "Owner"}</h1>
-      </div>
+    <div className="flex h-full flex-col gap-3 overflow-hidden p-4">
+      <h1 className="text-center text-lg font-black text-brand-ink">{owner?.storeName ?? "My Store"}</h1>
 
       <div className="grid grid-cols-2 gap-2">
-        <StatTile label="Today's Sales" value={`₱${todaysSales.toFixed(0)}`} hint={`${todaysOrders.length} order(s)`} tone="positive" />
+        <StatTile label="Today's Sales" value={`₱${todaysSales.toFixed(0)}`} hint={`${todaysOrders.length} order(s)`} tone="green" icon={<TrendingUp className="h-3.5 w-3.5" />} />
         <StatTile
           label="Low Stock"
           value={String(lowStock.length)}
-          tone={lowStock.length > 0 ? "warning" : "neutral"}
-          icon={lowStock.length > 0 ? <TriangleAlert className="h-3.5 w-3.5 text-yellow-600" /> : undefined}
+          tone="yellow"
+          icon={<TriangleAlert className="h-3.5 w-3.5" />}
         />
-        <StatTile label="Outstanding Loans" value={`₱${summary?.outstandingLoans.toFixed(0) ?? "0"}`} hint={`${summary?.loanCount ?? 0} active`} />
-        <StatTile label="Store Equity" value={`₱${summary?.equity.toFixed(0) ?? "0"}`} />
+        <StatTile label="Outstanding Loans" value={`₱${summary?.outstandingLoans.toFixed(0) ?? "0"}`} hint={`${summary?.loanCount ?? 0} active`} tone="red" icon={<HandCoins className="h-3.5 w-3.5" />} />
+        <StatTile label="Store Equity" value={`₱${summary?.equity.toFixed(0) ?? "0"}`} tone="blue" icon={<PiggyBank className="h-3.5 w-3.5" />} />
       </div>
 
-      {lowStock.length > 0 && (
-        <Card className="border-brand-gold/40 bg-brand-gold/10">
-          <CardContent className="flex items-center justify-between gap-2 pt-4">
-            <div className="flex items-center gap-2">
-              <TriangleAlert className="h-5 w-5 shrink-0 text-yellow-700" />
-              <p className="text-sm text-brand-ink">
-                {lowStock.length} product{lowStock.length > 1 ? "s are" : " is"} running low on stock.
-              </p>
-            </div>
-            <Button size="sm" variant="outline" onClick={() => navigate("/products")}>
-              View
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-
-      <div>
+      <div className="min-h-0 flex-1">
         <h2 className="mb-2 text-sm font-bold text-brand-ink">Quick Actions</h2>
         <div className="grid grid-cols-3 gap-2">
           <QuickAction icon={ShoppingCart} label="New Sale" onClick={() => navigate("/order")} />
@@ -71,12 +105,14 @@ export function HomePage() {
         </div>
       </div>
 
+      <BannerCarousel />
+
       <button
         type="button"
         onClick={() => navigate("/wallet")}
-        className="flex items-center justify-between rounded-xl border border-brand-ink/10 bg-white p-3 text-left shadow-sm"
+        className="flex shrink-0 items-center justify-between rounded-xl border border-brand-ink/10 bg-white p-3 text-left shadow-sm"
       >
-        <span className="text-sm font-medium text-brand-ink">View sales &amp; loan analytics</span>
+        <span className="text-sm font-medium text-brand-ink">View Sales &amp; Loan Analytics</span>
         <ArrowRight className="h-4 w-4 text-brand-ink/40" />
       </button>
     </div>

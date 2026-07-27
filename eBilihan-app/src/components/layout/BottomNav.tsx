@@ -29,21 +29,10 @@ export function BottomNav() {
       ))}
 
       <NavLink to="/order" className="relative flex flex-1 flex-col items-center justify-center">
-        {({ isActive }) => (
-          <>
-            <span
-              className={cn(
-                "-mt-7 flex h-14 w-14 items-center justify-center rounded-full shadow-lg ring-4 ring-white transition-colors",
-                isActive ? "bg-brand-blue" : "bg-brand-red",
-              )}
-            >
-              <ShoppingCart className="h-6 w-6 text-white" aria-hidden />
-            </span>
-            <span className={cn("mt-0.5 text-[10px] font-semibold", isActive ? "text-brand-blue" : "text-brand-ink/50")}>
-              Order
-            </span>
-          </>
-        )}
+        <span className="-mt-7 flex h-14 w-14 items-center justify-center rounded-full bg-brand-blue shadow-lg ring-4 ring-white">
+          <ShoppingCart className="h-6 w-6 text-white" aria-hidden />
+        </span>
+        <span className="mt-0.5 text-[10px] font-semibold text-brand-blue">Order</span>
       </NavLink>
 
       {SIDE_ITEMS_RIGHT.map((item) => (
