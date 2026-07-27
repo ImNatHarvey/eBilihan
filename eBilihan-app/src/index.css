@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@theme {
+  /* eBilihan brand palette, sourced from eBilihanReference/eGov Main Colors.png
+     and eGov Light Colors.png (shared eGov design system). */
+  --color-brand-blue: #0241e8;
+  --color-brand-red: #a80e13;
+  --color-brand-gold: #e9c400;
+  --color-brand-ink: #2e353b;
+
+  --color-brand-blue-light: #ecf4fc;
+  --color-brand-red-light: #fee8ea;
+  --color-brand-gold-light: #eafadf;
+  --color-brand-surface: #f0f3f8;
+
+  --font-sans: system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-brand-surface);
+  color: var(--color-brand-ink);
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
