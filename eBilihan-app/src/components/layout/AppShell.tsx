@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
-import { LogOut, User, WifiOff } from "lucide-react";
+import { User, WifiOff } from "lucide-react";
 import { PhoneFrame } from "./PhoneFrame";
 import { BottomNav } from "./BottomNav";
 import { Badge } from "@/components/ui/badge";
@@ -30,38 +30,36 @@ export function AppShell() {
     navigate("/login", { replace: true });
   }
 
+  const firstName = owner?.fullName?.split(" ")[0] ?? "Owner";
+
   return (
     <PhoneFrame>
-      <header className="shrink-0 bg-brand-blue pt-[env(safe-area-inset-top)] text-white shadow-md">
+      <header className="shrink-0 border-b border-brand-ink/10 bg-white pt-[env(safe-area-inset-top)]">
         <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <img src={logo} alt="" className="h-7 w-7 shrink-0 rounded-md bg-white object-contain p-0.5" aria-hidden />
-            <div className="min-w-0">
-              <h1 className="text-lg font-bold leading-tight">eBilihan</h1>
-              <p className="truncate text-[10px] text-white/70">{owner?.storeName ?? "Store"}</p>
-            </div>
-          </div>
+          <img src={logo} alt="eBilihan" className="h-8 shrink-0 object-contain" />
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             {!online && (
-              <Badge variant="warning" className="gap-1 bg-brand-gold/25 text-white">
+              <Badge variant="warning" className="gap-1">
                 <WifiOff className="h-3 w-3" aria-hidden />
                 Offline
               </Badge>
             )}
 
-            <div className="flex items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-2.5 py-1.5 text-xs">
-              <User className="h-3 w-3 text-brand-gold" aria-hidden />
-              <span className="max-w-24 truncate">{owner?.fullName ?? "Owner"}</span>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="ml-0.5 rounded p-0.5 text-white/70 hover:text-white"
-                aria-label="Log out"
-              >
-                <LogOut className="h-3.5 w-3.5" aria-hidden />
-              </button>
+            <div className="text-right leading-tight">
+              <p className="text-sm font-bold text-brand-ink">Mabuhay, {firstName}</p>
+              <p className="text-[10px] text-brand-ink/50">Welcome to eGovPH</p>
             </div>
+
+            {/* Placeholder profile action until a real Profile/Settings page exists — logs out for now. */}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-blue-light text-brand-blue"
+              aria-label="Profile / Log out"
+            >
+              <User className="h-4 w-4" aria-hidden />
+            </button>
           </div>
         </div>
       </header>
