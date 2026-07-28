@@ -21,6 +21,6 @@ export async function deleteProduct(id: string) {
 }
 
 export async function getProductByBarcode(barcode: string) {
-  const { data } = await api.get<{ data: Product }>(`/products/by-barcode/${barcode}`);
+  const { data } = await api.get<{ data: Product }>(`/products/by-barcode/${encodeURIComponent(barcode)}`);
   return data.data;
 }

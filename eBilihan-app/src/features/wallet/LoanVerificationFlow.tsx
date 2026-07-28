@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { QrCode, ScanFace, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { QrCode, ScanFace, CheckCircle2, XCircle, Loader2, AlertTriangle, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import { startFaceLiveness } from "@/lib/everifyFaceLiveness";
 import { buildLoanAgreementPdf } from "@/lib/loanAgreementPdf";
 import { useAuthStore } from "@/store/authStore";
 
-type Step = "idle" | "scanning-qr" | "capturing-face" | "verifying" | "verified" | "rejected" | "creating-loan" | "done";
+type Step = "idle" | "scanning-qr" | "capturing-face" | "face-failed" | "verifying" | "verified" | "rejected" | "creating-loan" | "done";
 
 /**
  * Loan Management (Pautang) borrower verification: scan the borrower's eGovPH QR,
@@ -24,34 +24,60 @@ export function LoanVerificationFlow() {
   const owner = useAuthStore((s) => s.owner);
   const { scanOnce } = useBarcodeScanner();
   const [step, setStep] = useState<Step>("idle");
+  const [qrValue, setQrValue] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<BorrowerVerificationResult | null>(null);
   const [principal, setPrincipal] = useState("");
   const [borrowerMobile, setBorrowerMobile] = useState("");
 
-  async function startVerification() {
+  async function captureFace(scannedQr: string) {
     setError(null);
-    setResult(null);
     try {
-      setStep("scanning-qr");
-      const qrValue = await scanOnce();
-      if (!qrValue) {
-        setStep("idle");
-        return;
-      }
-
       setStep("capturing-face");
       const pubKey = await getEverifyPubKey();
       const { sessionId } = await startFaceLiveness(pubKey);
 
       setStep("verifying");
-      const verification = await verifyBorrower(qrValue, sessionId);
+      const verification = await verifyBorrower(scannedQr, sessionId);
       setResult(verification);
       setStep(verification.matched ? "verified" : "rejected");
+    } catch (err) {
+      // Most likely cause: EVERIFY_PUBKEY isn't set on the backend — eVerify's own SDK
+      // throws "pubKey is required!" synchronously if it's blank. Surfacing the real
+      // message here (not a generic one) is what makes that diagnosable.
+      setError(err instanceof Error ? err.message : "Face liveness capture failed");
+      setStep("face-failed");
+    }
+  }
+
+  async function startVerification() {
+    setError(null);
+    setResult(null);
+    setQrValue(null);
+    try {
+      setStep("scanning-qr");
+      const value = await scanOnce("qr");
+      if (!value) {
+        setStep("idle");
+        return;
+      }
+      setQrValue(value);
+      await captureFace(value);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
       setStep("idle");
     }
+  }
+
+  function retryFaceCapture() {
+    if (qrValue) captureFace(qrValue);
+  }
+
+  function startOver() {
+    setStep("idle");
+    setError(null);
+    setResult(null);
+    setQrValue(null);
   }
 
   async function handleCreateLoan() {
@@ -105,13 +131,42 @@ export function LoanVerificationFlow() {
               <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Matching against PhilSys...
             </Badge>
           )}
-          {error && (
-            <Badge variant="danger" className="w-fit">
-              {error}
-            </Badge>
-          )}
         </CardContent>
       </Card>
+
+      {step === "face-failed" && (
+        <Card className="border-brand-red-light bg-brand-red-light">
+          <CardContent className="flex flex-col gap-3 pt-4">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-brand-red" />
+              <div>
+                <p className="text-sm font-bold text-brand-red">Face liveness capture failed</p>
+                <p className="mt-1 text-xs text-brand-red/80">{error}</p>
+                {error?.toLowerCase().includes("pubkey") && (
+                  <p className="mt-1 text-xs text-brand-red/80">
+                    This means <code className="font-mono">EVERIFY_PUBKEY</code> isn&apos;t set (or is blank) in the
+                    backend&apos;s environment variables — check that on Render.
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={startOver}>
+                <RotateCcw className="h-4 w-4" /> Start Over
+              </Button>
+              <Button className="flex-1" onClick={retryFaceCapture}>
+                <ScanFace className="h-4 w-4" /> Retry Face Capture
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "idle" && error && (
+        <Badge variant="danger" className="w-fit">
+          {error}
+        </Badge>
+      )}
 
       {step === "rejected" && (
         <Card>

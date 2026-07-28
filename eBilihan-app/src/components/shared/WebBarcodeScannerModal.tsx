@@ -4,6 +4,8 @@ import { X, ScanLine } from "lucide-react";
 import { useScannerStore } from "@/store/scannerStore";
 import { Button } from "@/components/ui/button";
 
+const RETAIL_BARCODE_FORMATS = ["EAN_13", "EAN_8", "UPC_A", "UPC_E", "CODE_128", "CODE_39", "CODE_93", "ITF"] as const;
+
 /**
  * Full-screen camera barcode/QR scanner for browser tabs (ML Kit — used on native
  * builds — has no real web implementation; see useBarcodeScanner.ts). Uses ZXing
@@ -11,7 +13,11 @@ import { Button } from "@/components/ui/button";
  * since that still isn't supported on iOS Safari.
  *
  * Rendered once in AppShell.tsx; opened imperatively via useScannerStore so call
- * sites (POSView, LoanVerificationFlow) just `await scanOnce()` same as native.
+ * sites (POSView, LoanVerificationFlow) just `await scanOnce(kind)` same as native.
+ * `kind` restricts ZXing's format hints (retail barcode formats vs. QR-only) — an
+ * unrestricted multi-format scan can misdetect noise as a spurious match on a
+ * blurry/partial frame, which is why the same physical barcode could decode
+ * differently between two scan attempts.
  *
  * Requires a secure context (HTTPS or localhost) — getUserMedia is blocked on plain
  * `http://<lan-ip>`, which is why this only really works once deployed (or on
@@ -19,6 +25,7 @@ import { Button } from "@/components/ui/button";
  */
 export function WebBarcodeScannerModal() {
   const isOpen = useScannerStore((s) => s.isOpen);
+  const kind = useScannerStore((s) => s.kind);
   const close = useScannerStore((s) => s.close);
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
@@ -33,9 +40,17 @@ export function WebBarcodeScannerModal() {
     (async () => {
       try {
         const { BrowserMultiFormatReader } = await import("@zxing/browser");
+        const { BarcodeFormat, DecodeHintType } = await import("@zxing/library");
         if (cancelled || !videoRef.current) return;
 
-        const reader = new BrowserMultiFormatReader();
+        const formats = kind === "qr" ? ["QR_CODE"] : RETAIL_BARCODE_FORMATS;
+        const hints = new Map();
+        hints.set(
+          DecodeHintType.POSSIBLE_FORMATS,
+          formats.map((f) => BarcodeFormat[f as keyof typeof BarcodeFormat]),
+        );
+
+        const reader = new BrowserMultiFormatReader(hints);
         const controls = await reader.decodeFromConstraints(
           { video: { facingMode: "environment" } },
           videoRef.current,
@@ -64,7 +79,7 @@ export function WebBarcodeScannerModal() {
       controlsRef.current?.stop();
       controlsRef.current = null;
     };
-  }, [isOpen, close]);
+  }, [isOpen, kind, close]);
 
   if (!isOpen) return null;
 
@@ -88,7 +103,7 @@ export function WebBarcodeScannerModal() {
 
         <div className="absolute left-0 right-0 top-4 flex justify-center">
           <span className="flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1.5 text-xs font-medium text-white">
-            <ScanLine className="h-3.5 w-3.5" /> Point at a barcode or QR code
+            <ScanLine className="h-3.5 w-3.5" /> {kind === "qr" ? "Point at the eGovPH QR code" : "Point at the product barcode"}
           </span>
         </div>
       </div>
