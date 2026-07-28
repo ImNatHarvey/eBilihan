@@ -22,14 +22,28 @@ export async function listLoans() {
   return data.data;
 }
 
-export async function createLoan(input: {
+export type LoanInput = {
   borrowerEgovphUniqid: string;
   borrowerName: string;
   borrowerPhilsysNumber: string;
   borrowerMobile?: string;
   principal: number;
-}) {
+  dueDate: string;
+};
+
+export async function createLoan(input: LoanInput) {
   const { data } = await api.post<{ data: Loan }>("/loans", input);
+  return data.data;
+}
+
+/** OTP-gated loan creation — sends a confirmation code to `mobile` before recording anything. */
+export async function loanOtpStart(mobile: string) {
+  const { data } = await api.post<{ message: string }>("/loans/otp/start", { mobile });
+  return data;
+}
+
+export async function loanOtpConfirm(mobile: string, otp: string, input: LoanInput) {
+  const { data } = await api.post<{ data: Loan }>("/loans/otp/confirm", { mobile, otp, ...input });
   return data.data;
 }
 

@@ -203,7 +203,8 @@ request/response shape — some of these are easy to get subtly wrong from memor
     (`Verify Personal Information`)
   - `POST {base}/api/query/qr/check` — QR value only, decode without biometric match
   - `POST {base}/api/query/qr` — QR value + `face_liveness_session_id` → full match
-    (`QR Verify`) — **this is what the Loan Management flow uses**
+    (`QR Verify`) — **real, working, but not currently called by the UI** (see
+    DEMO_BORROWER_NAME below).
   - A matched response has `data.code === "AAA001"`; anything else (e.g. face mismatch)
     must block the action gating on it. See `server/src/routes/loans.ts`
     `verify-borrower`.
@@ -212,9 +213,12 @@ request/response shape — some of these are easy to get subtly wrong from memor
      `hackathon-everify-face-liveness.e.gov.ph`, `window.eKYC().start({ pubKey })`) —
      its `pubkey` credential is listed *under eVerify* in the credentials dialog, not
      under "Face Liveness". Its `result.session_id` is what eVerify's own `/api/query*`
-     endpoints expect as `face_liveness_session_id`. **This is the one the Loan
-     Management borrower-verification flow uses** (`src/lib/everifyFaceLiveness.ts`),
-     because it's the flow eVerify's own docs describe end-to-end.
+     endpoints expect as `face_liveness_session_id`. Confirmed live (2026-07) that the
+     script is real and its `.start()` opens a full-screen iframe
+     (`https://liveness.everify.gov.ph/?t=basic&...`) — but it throws synchronously if
+     `pubKey` is blank, which silently aborted the Loan flow back to square one before
+     this was diagnosed. `src/lib/everifyFaceLiveness.ts` still wraps it (unused for
+     now — `LoanVerificationFlow.tsx` no longer imports it) — see DEMO_BORROWER_NAME below.
   2. **A standalone "Face Liveness" REST product** (`POST {base}/v1/liveness/session`,
      `GET {base}/v1/liveness/result/{sessionToken}`, header `x-api-key`, its own
      separate credential). Its session tokens are a different namespace from
@@ -268,10 +272,13 @@ code — replace its internals (only) once real eGovchain API docs exist.
   doesn't bloat the main bundle — getUserMedia + canvas decoding, chosen over the
   newer native `BarcodeDetector` API since that still isn't supported on iOS Safari).
   The web path is bridged through `store/scannerStore.ts` so callers (`POSView`,
-  `LoanVerificationFlow`) just `await scanOnce()` either way, no branching at the call
-  site. **Requires a secure context** (HTTPS or `localhost`) — browsers block camera
-  access on plain `http://<lan-ip>`, which is part of why deploying (real HTTPS) fixed
-  scanning that didn't work when testing over a local network IP.
+  `LoanVerificationFlow`) just `await scanOnce(kind)` either way — `kind` ("barcode" |
+  "qr") restricts which formats are matched, which matters: an unrestricted multi-format
+  scan can misdetect noise as a false match on a blurry frame, so the same physical
+  barcode could decode differently between two scan attempts. **Requires a secure
+  context** (HTTPS or `localhost`) — browsers block camera access on plain
+  `http://<lan-ip>`, which is part of why deploying (real HTTPS) fixed scanning that
+  didn't work when testing over a local network IP.
 - **A backend was added even though the brief only specified a frontend stack.** Not
   optional — see Security model above. `/server` is a small Express app, not a
   full framework choice; if the team already has backend infra/conventions elsewhere,
@@ -302,6 +309,22 @@ code — replace its internals (only) once real eGovchain API docs exist.
     afterward needs a deep-link listener to catch the returned `exchange_code`, which is
     **not built yet**. Swap `DEMO_EGOVPH_PROFILE`/`fetchEgovphDemoProfile()` back for
     the real resolution once that URL and listener exist.
+- **Loan borrower verification uses a hardcoded demo name, not real eVerify matching.**
+  `LoanVerificationFlow.tsx`'s `DEMO_BORROWER_NAME` (`"ARIEL SAYGAN ALBERTO JR."`) — per
+  explicit request, since real eVerify QR+liveness matching needs a working
+  `EVERIFY_PUBKEY` and a QR the demo eGovPH account is actually eVerify-linked to,
+  neither reliably available for a live demo. What IS still real: the QR scan itself
+  (`scanOnce("qr")` — the scanned value is stored as the loan's
+  `borrowerEgovphUniqid`/`borrowerPhilsysNumber`, genuine data from the physical QR),
+  and the face capture (`FaceLivenessCaptureModal.tsx` — a real front-camera photo via
+  `getUserMedia({video:{facingMode:"user"}})`, but **not** real liveness/anti-spoof
+  detection — it always "succeeds" after a 3-second countdown). Loan creation is then
+  gated behind an OTP to `DEMO_MOBILE_E164` (`POST /loans/otp/start` /
+  `/otp/confirm` in `server/src/routes/loans.ts`, same `pendingOtps` pattern as
+  login/registration) before `sendSms` fires the real loan-agreement text. The real
+  eVerify path (`POST /loans/verify-borrower`, `src/lib/everifyFaceLiveness.ts`) is
+  untouched and still works — swap `DEMO_BORROWER_NAME` back for a real
+  `verifyBorrower()` call once eVerify credentials/linkage are solid.
 - **Dark mode was removed on request** — the app is light-theme only
   (`src/index.css` has no `prefers-color-scheme: dark` block, and `dark:` variants were
   stripped from `components/ui/*`). Don't reintroduce `dark:` classes without being asked.
