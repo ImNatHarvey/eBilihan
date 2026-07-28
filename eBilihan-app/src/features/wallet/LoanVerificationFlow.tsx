@@ -1,59 +1,59 @@
 import { useState } from "react";
-import { QrCode, ScanFace, CheckCircle2, XCircle, Loader2, AlertTriangle, RotateCcw } from "lucide-react";
+import { QrCode, ScanFace, CheckCircle2, Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { OtpInput } from "@/components/ui/otp-input";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { getEverifyPubKey } from "@/api/verify";
-import { verifyBorrower, createLoan, type BorrowerVerificationResult } from "@/api/loans";
-import { startFaceLiveness } from "@/lib/everifyFaceLiveness";
+import { useFaceCaptureStore } from "@/store/faceCaptureStore";
+import { loanOtpStart, loanOtpConfirm, type LoanInput } from "@/api/loans";
+import { DEMO_MOBILE_E164, maskMobile } from "@/lib/demoIdentity";
 import { buildLoanAgreementPdf } from "@/lib/loanAgreementPdf";
 import { useAuthStore } from "@/store/authStore";
 
-type Step = "idle" | "scanning-qr" | "capturing-face" | "face-failed" | "verifying" | "verified" | "rejected" | "creating-loan" | "done";
+type Step = "idle" | "scanning-qr" | "capturing-face" | "verified" | "otp" | "creating-loan" | "done";
 
 /**
- * Loan Management (Pautang) borrower verification: scan the borrower's eGovPH QR,
- * capture a face liveness session via eVerify's Web SDK, and match both against
- * PhilSys before a loan can be created. Per the project brief's hard constraint,
- * only a "matched" borrower (eVerify code AAA001) may proceed to loan creation.
+ * DEMO STAND-IN for the borrower's verified name. Real eVerify QR+liveness matching
+ * (routes/loans.ts `/verify-borrower`, still intact and working) needs a valid
+ * EVERIFY_PUBKEY and a QR the demo eGovPH account is actually linked to in eVerify's
+ * system — neither is reliably available for a live demo, so per explicit request
+ * this flow instead: really scans the borrower's QR (used as the stored PhilSys
+ * identifier below — that part IS real data), really captures a front-camera photo
+ * (FaceLivenessCaptureModal — a genuine camera moment, not real liveness/anti-spoof
+ * detection), and always treats that as a successful match, presenting this
+ * hardcoded name exactly like the registration flow's demo profile.
+ */
+const DEMO_BORROWER_NAME = "ARIEL SAYGAN ALBERTO JR.";
+
+function defaultDueDate(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 30);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Loan Management (Pautang) borrower verification + creation: scan the borrower's
+ * eGovPH QR, capture a face liveness photo, confirm loan details, then an OTP to the
+ * demo number gates actually recording the loan (same "prove control of this number"
+ * pattern as login/registration).
  */
 export function LoanVerificationFlow() {
   const owner = useAuthStore((s) => s.owner);
   const { scanOnce } = useBarcodeScanner();
+  const openFaceCapture = useFaceCaptureStore((s) => s.open);
   const [step, setStep] = useState<Step>("idle");
   const [qrValue, setQrValue] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<BorrowerVerificationResult | null>(null);
   const [principal, setPrincipal] = useState("");
-  const [borrowerMobile, setBorrowerMobile] = useState("");
-
-  async function captureFace(scannedQr: string) {
-    setError(null);
-    try {
-      setStep("capturing-face");
-      const pubKey = await getEverifyPubKey();
-      const { sessionId } = await startFaceLiveness(pubKey);
-
-      setStep("verifying");
-      const verification = await verifyBorrower(scannedQr, sessionId);
-      setResult(verification);
-      setStep(verification.matched ? "verified" : "rejected");
-    } catch (err) {
-      // Most likely cause: EVERIFY_PUBKEY isn't set on the backend — eVerify's own SDK
-      // throws "pubKey is required!" synchronously if it's blank. Surfacing the real
-      // message here (not a generic one) is what makes that diagnosable.
-      setError(err instanceof Error ? err.message : "Face liveness capture failed");
-      setStep("face-failed");
-    }
-  }
+  const [dueDate, setDueDate] = useState(defaultDueDate());
+  const [otp, setOtp] = useState("");
+  const [isBusy, setIsBusy] = useState(false);
 
   async function startVerification() {
     setError(null);
-    setResult(null);
-    setQrValue(null);
     try {
       setStep("scanning-qr");
       const value = await scanOnce("qr");
@@ -62,42 +62,64 @@ export function LoanVerificationFlow() {
         return;
       }
       setQrValue(value);
-      await captureFace(value);
+
+      setStep("capturing-face");
+      const photo = await openFaceCapture();
+      if (photo === null) {
+        setStep("idle");
+        return;
+      }
+
+      setStep("verified");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
       setStep("idle");
     }
   }
 
-  function retryFaceCapture() {
-    if (qrValue) captureFace(qrValue);
+  async function handleSendOtp() {
+    setError(null);
+    setIsBusy(true);
+    try {
+      await loanOtpStart(DEMO_MOBILE_E164);
+      setStep("otp");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send OTP");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleConfirmOtp() {
+    if (!qrValue) return;
+    setError(null);
+    setStep("creating-loan");
+    try {
+      const input: LoanInput = {
+        borrowerEgovphUniqid: qrValue,
+        borrowerName: DEMO_BORROWER_NAME,
+        borrowerPhilsysNumber: qrValue,
+        borrowerMobile: DEMO_MOBILE_E164,
+        principal: Number(principal),
+        dueDate: new Date(dueDate).toISOString(),
+      };
+      const loan = await loanOtpConfirm(DEMO_MOBILE_E164, otp, input);
+      const doc = await buildLoanAgreementPdf(loan, owner?.storeName ?? "eBilihan Store");
+      doc.save(`loan-agreement-${loan.id.slice(0, 8)}.pdf`);
+      setStep("done");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid code");
+      setStep("otp");
+    }
   }
 
   function startOver() {
     setStep("idle");
     setError(null);
-    setResult(null);
     setQrValue(null);
-  }
-
-  async function handleCreateLoan() {
-    if (!result?.matched || !result.profile) return;
-    setStep("creating-loan");
-    try {
-      const loan = await createLoan({
-        borrowerEgovphUniqid: result.profile.code,
-        borrowerName: result.profile.full_name,
-        borrowerPhilsysNumber: result.profile.code,
-        borrowerMobile: borrowerMobile || undefined,
-        principal: Number(principal),
-      });
-      const doc = await buildLoanAgreementPdf(loan, owner?.storeName ?? "eBilihan Store");
-      doc.save(`loan-agreement-${loan.id.slice(0, 8)}.pdf`);
-      setStep("done");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create loan");
-      setStep("verified");
-    }
+    setPrincipal("");
+    setDueDate(defaultDueDate());
+    setOtp("");
   }
 
   return (
@@ -105,10 +127,7 @@ export function LoanVerificationFlow() {
       <Card>
         <CardHeader>
           <CardTitle>Verify Borrower</CardTitle>
-          <CardDescription>
-            Scan the borrower&apos;s eGovPH QR code, then capture a face liveness check to confirm identity before
-            lending.
-          </CardDescription>
+          <CardDescription>Scan the borrower&apos;s eGovPH QR code, then capture a face liveness check.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           {step === "idle" && (
@@ -126,91 +145,64 @@ export function LoanVerificationFlow() {
               <ScanFace className="mr-1 h-3 w-3" /> Capturing face liveness...
             </Badge>
           )}
-          {step === "verifying" && (
-            <Badge variant="default" className="w-fit">
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Matching against PhilSys...
+          {error && (
+            <Badge variant="danger" className="w-fit">
+              {error}
             </Badge>
           )}
         </CardContent>
       </Card>
 
-      {step === "face-failed" && (
-        <Card className="border-brand-red-light bg-brand-red-light">
-          <CardContent className="flex flex-col gap-3 pt-4">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="h-5 w-5 shrink-0 text-brand-red" />
-              <div>
-                <p className="text-sm font-bold text-brand-red">Face liveness capture failed</p>
-                <p className="mt-1 text-xs text-brand-red/80">{error}</p>
-                {error?.toLowerCase().includes("pubkey") && (
-                  <p className="mt-1 text-xs text-brand-red/80">
-                    This means <code className="font-mono">EVERIFY_PUBKEY</code> isn&apos;t set (or is blank) in the
-                    backend&apos;s environment variables — check that on Render.
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={startOver}>
-                <RotateCcw className="h-4 w-4" /> Start Over
-              </Button>
-              <Button className="flex-1" onClick={retryFaceCapture}>
-                <ScanFace className="h-4 w-4" /> Retry Face Capture
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {step === "idle" && error && (
-        <Badge variant="danger" className="w-fit">
-          {error}
-        </Badge>
-      )}
-
-      {step === "rejected" && (
-        <Card>
-          <CardContent className="flex items-center gap-2 pt-4 text-brand-red">
-            <XCircle />
-            <p className="text-sm">
-              Face did not match this eGovPH ID, or the account isn&apos;t fully verified. This customer cannot be
-              loaned to until they resolve their eGovPH verification.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {(step === "verified" || step === "creating-loan" || step === "done") && result?.profile && (
+      {(step === "verified" || step === "otp" || step === "creating-loan" || step === "done") && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-green-700">
               <CheckCircle2 className="h-5 w-5" /> Identity Verified
             </CardTitle>
-            <CardDescription>{result.profile.full_name}</CardDescription>
+            <CardDescription>{DEMO_BORROWER_NAME}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            {step !== "done" ? (
+            {step === "verified" && (
               <>
                 <div>
                   <Label htmlFor="principal">Loan amount (PHP)</Label>
                   <Input id="principal" type="number" min="1" value={principal} onChange={(e) => setPrincipal(e.target.value)} />
                 </div>
                 <div>
-                  <Label htmlFor="borrowerMobile">Borrower mobile (for SMS alerts, optional)</Label>
-                  <Input id="borrowerMobile" placeholder="+639XXXXXXXXX" value={borrowerMobile} onChange={(e) => setBorrowerMobile(e.target.value)} />
+                  <Label htmlFor="dueDate">Due date</Label>
+                  <Input id="dueDate" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
                 </div>
-                <Button
-                  size="lg"
-                  onClick={handleCreateLoan}
-                  disabled={!principal || Number(principal) <= 0 || step === "creating-loan"}
-                >
-                  {step === "creating-loan" ? "Creating Loan..." : "Create Loan & Generate Agreement"}
+                <Button size="lg" onClick={handleSendOtp} disabled={!principal || Number(principal) <= 0 || isBusy}>
+                  {isBusy ? "Sending code..." : "Send OTP to Confirm"}
                 </Button>
               </>
-            ) : (
-              <Badge variant="success" className="w-fit">
-                Loan created and agreement PDF saved.
+            )}
+
+            {step === "otp" && (
+              <>
+                <Label>Enter the 6-digit code sent to {maskMobile(DEMO_MOBILE_E164)}</Label>
+                <OtpInput value={otp} onChange={setOtp} />
+                <Button size="lg" onClick={handleConfirmOtp} disabled={otp.length !== 6}>
+                  Verify &amp; Create Loan
+                </Button>
+              </>
+            )}
+
+            {step === "creating-loan" && (
+              <Badge variant="default" className="w-fit">
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Creating loan &amp; sending agreement...
               </Badge>
+            )}
+
+            {step === "done" && (
+              <>
+                <Badge variant="success" className="w-fit">
+                  Loan created — agreement sent via eMessage.
+                </Badge>
+                <Button variant="outline" onClick={startOver}>
+                  <RotateCcw className="h-4 w-4" /> Verify Another Borrower
+                </Button>
+              </>
             )}
           </CardContent>
         </Card>
