@@ -261,8 +261,17 @@ code — replace its internals (only) once real eGovchain API docs exist.
 - **`@capacitor-community/barcode-scanner` → `@capacitor-mlkit/barcode-scanning`.** The
   originally-specified package is pinned to Capacitor 5 and effectively unmaintained;
   installing it alongside Capacitor 8 (current) produces broken peer-dependency
-  conflicts. ML Kit is the actively maintained successor. See
-  `src/hooks/useBarcodeScanner.ts`.
+  conflicts. ML Kit is the actively maintained successor, but it's native-only (Android/
+  iOS) — there's no real web implementation. `src/hooks/useBarcodeScanner.ts` branches
+  on `Capacitor.isNativePlatform()`: native builds use ML Kit; browser tabs open
+  `WebBarcodeScannerModal.tsx` instead (`@zxing/browser`, dynamically imported so it
+  doesn't bloat the main bundle — getUserMedia + canvas decoding, chosen over the
+  newer native `BarcodeDetector` API since that still isn't supported on iOS Safari).
+  The web path is bridged through `store/scannerStore.ts` so callers (`POSView`,
+  `LoanVerificationFlow`) just `await scanOnce()` either way, no branching at the call
+  site. **Requires a secure context** (HTTPS or `localhost`) — browsers block camera
+  access on plain `http://<lan-ip>`, which is part of why deploying (real HTTPS) fixed
+  scanning that didn't work when testing over a local network IP.
 - **A backend was added even though the brief only specified a frontend stack.** Not
   optional — see Security model above. `/server` is a small Express app, not a
   full framework choice; if the team already has backend infra/conventions elsewhere,
