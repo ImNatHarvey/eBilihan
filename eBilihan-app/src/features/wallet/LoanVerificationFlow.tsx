@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { OtpInput } from "@/components/ui/otp-input";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
-import { useFaceCaptureStore } from "@/store/faceCaptureStore";
+import { getEverifyPubKey } from "@/api/verify";
+import { startFaceLiveness } from "@/lib/everifyFaceLiveness";
 import { loanOtpStart, loanOtpConfirm, type LoanInput } from "@/api/loans";
 import { DEMO_MOBILE_E164, maskMobile } from "@/lib/demoIdentity";
 import { buildLoanAgreementPdf } from "@/lib/loanAgreementPdf";
@@ -16,15 +17,18 @@ import { useAuthStore } from "@/store/authStore";
 type Step = "idle" | "scanning-qr" | "capturing-face" | "verified" | "otp" | "creating-loan" | "done";
 
 /**
- * DEMO STAND-IN for the borrower's verified name. Real eVerify QR+liveness matching
- * (routes/loans.ts `/verify-borrower`, still intact and working) needs a valid
- * EVERIFY_PUBKEY and a QR the demo eGovPH account is actually linked to in eVerify's
- * system — neither is reliably available for a live demo, so per explicit request
- * this flow instead: really scans the borrower's QR (used as the stored PhilSys
- * identifier below — that part IS real data), really captures a front-camera photo
- * (FaceLivenessCaptureModal — a genuine camera moment, not real liveness/anti-spoof
- * detection), and always treats that as a successful match, presenting this
- * hardcoded name exactly like the registration flow's demo profile.
+ * DEMO STAND-IN for the borrower's verified name only. The liveness check itself is
+ * real: `startFaceLiveness()` below calls eVerify's actual Face Liveness Web SDK
+ * (`window.eKYC().start({ pubKey })`), which opens eVerify's own full-screen iframe
+ * and does genuine biometric liveness/anti-spoof detection — it rejects on failure or
+ * user cancellation, exactly like the integration doc describes. What's still faked is
+ * the *identity match*: turning that liveness session_id + the scanned QR into a
+ * verified name requires `/loans/verify-borrower` (routes/loans.ts, still intact) to
+ * return `code === "AAA001"` from eVerify's PhilSys-backed QR Verify, which needs the
+ * demo eGovPH account to actually be eVerify-linked to the scanned QR — not reliably
+ * available for a live demo. So the QR scan is real (used as `borrowerEgovphUniqid`
+ * below) and the liveness capture is real, but the resulting *name* is this hardcoded
+ * stand-in rather than whatever `/verify-borrower` would have returned.
  */
 const DEMO_BORROWER_NAME = "ARIEL SAYGAN ALBERTO JR.";
 
@@ -43,7 +47,6 @@ function defaultDueDate(): string {
 export function LoanVerificationFlow() {
   const owner = useAuthStore((s) => s.owner);
   const { scanOnce } = useBarcodeScanner();
-  const openFaceCapture = useFaceCaptureStore((s) => s.open);
   const [step, setStep] = useState<Step>("idle");
   const [qrValue, setQrValue] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,11 +67,13 @@ export function LoanVerificationFlow() {
       setQrValue(value);
 
       setStep("capturing-face");
-      const photo = await openFaceCapture();
-      if (photo === null) {
+      const pubKey = await getEverifyPubKey();
+      if (!pubKey) {
+        setError("Face Liveness isn't configured (missing EVERIFY_PUBKEY on the backend).");
         setStep("idle");
         return;
       }
+      await startFaceLiveness(pubKey);
 
       setStep("verified");
     } catch (err) {
@@ -142,7 +147,7 @@ export function LoanVerificationFlow() {
           )}
           {step === "capturing-face" && (
             <Badge variant="default" className="w-fit">
-              <ScanFace className="mr-1 h-3 w-3" /> Capturing face liveness...
+              <ScanFace className="mr-1 h-3 w-3" /> Complete the face liveness check in the window that opens...
             </Badge>
           )}
           {error && (

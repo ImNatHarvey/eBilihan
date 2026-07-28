@@ -217,8 +217,9 @@ request/response shape — some of these are easy to get subtly wrong from memor
      script is real and its `.start()` opens a full-screen iframe
      (`https://liveness.everify.gov.ph/?t=basic&...`) — but it throws synchronously if
      `pubKey` is blank, which silently aborted the Loan flow back to square one before
-     this was diagnosed. `src/lib/everifyFaceLiveness.ts` still wraps it (unused for
-     now — `LoanVerificationFlow.tsx` no longer imports it) — see DEMO_BORROWER_NAME below.
+     this was diagnosed (fixed by fetching the pubKey from `GET /verify/pubkey` instead
+     of assuming it's present client-side). `src/lib/everifyFaceLiveness.ts` wraps it and
+     **is called live** by `LoanVerificationFlow.tsx` — see DEMO_BORROWER_NAME below.
   2. **A standalone "Face Liveness" REST product** (`POST {base}/v1/liveness/session`,
      `GET {base}/v1/liveness/result/{sessionToken}`, header `x-api-key`, its own
      separate credential). Its session tokens are a different namespace from
@@ -309,22 +310,28 @@ code — replace its internals (only) once real eGovchain API docs exist.
     afterward needs a deep-link listener to catch the returned `exchange_code`, which is
     **not built yet**. Swap `DEMO_EGOVPH_PROFILE`/`fetchEgovphDemoProfile()` back for
     the real resolution once that URL and listener exist.
-- **Loan borrower verification uses a hardcoded demo name, not real eVerify matching.**
-  `LoanVerificationFlow.tsx`'s `DEMO_BORROWER_NAME` (`"ARIEL SAYGAN ALBERTO JR."`) — per
-  explicit request, since real eVerify QR+liveness matching needs a working
-  `EVERIFY_PUBKEY` and a QR the demo eGovPH account is actually eVerify-linked to,
-  neither reliably available for a live demo. What IS still real: the QR scan itself
+- **Loan borrower verification uses a hardcoded demo name, but a real eVerify Face
+  Liveness check.** `LoanVerificationFlow.tsx`'s `DEMO_BORROWER_NAME`
+  (`"ARIEL SAYGAN ALBERTO JR."`) stands in for the identity *match* only — real eVerify
+  QR+liveness matching (`/loans/verify-borrower`) needs the demo eGovPH account to
+  actually be eVerify-linked to whatever QR gets scanned, not reliably available for a
+  live demo. Everything upstream of that name is real: the QR scan itself
   (`scanOnce("qr")` — the scanned value is stored as the loan's
   `borrowerEgovphUniqid`/`borrowerPhilsysNumber`, genuine data from the physical QR),
-  and the face capture (`FaceLivenessCaptureModal.tsx` — a real front-camera photo via
-  `getUserMedia({video:{facingMode:"user"}})`, but **not** real liveness/anti-spoof
-  detection — it always "succeeds" after a 3-second countdown). Loan creation is then
-  gated behind an OTP to `DEMO_MOBILE_E164` (`POST /loans/otp/start` /
+  and the face capture, which calls eVerify's actual **Face Liveness Web SDK**
+  (`src/lib/everifyFaceLiveness.ts` → `window.eKYC().start({ pubKey })`, pubKey fetched
+  from `GET /verify/pubkey` so the raw key never ships in the bundle) — a real
+  full-screen liveness/anti-spoof check hosted at `liveness.everify.gov.ph` that
+  resolves with a `session_id` on success or rejects on failure/cancellation, exactly
+  per `eBilihanReference/eGOV API/eVerify/integration.png`. (The earlier
+  `FaceLivenessCaptureModal.tsx`/`faceCaptureStore.ts` — a fake front-camera capture
+  that always succeeded — was removed once this real SDK call replaced it.) Loan
+  creation is then gated behind an OTP to `DEMO_MOBILE_E164` (`POST /loans/otp/start` /
   `/otp/confirm` in `server/src/routes/loans.ts`, same `pendingOtps` pattern as
-  login/registration) before `sendSms` fires the real loan-agreement text. The real
-  eVerify path (`POST /loans/verify-borrower`, `src/lib/everifyFaceLiveness.ts`) is
-  untouched and still works — swap `DEMO_BORROWER_NAME` back for a real
-  `verifyBorrower()` call once eVerify credentials/linkage are solid.
+  login/registration) before `sendSms` fires the real loan-agreement text. The full real
+  eVerify match path (`POST /loans/verify-borrower`) is untouched and still works — swap
+  `DEMO_BORROWER_NAME` for a real `verifyBorrower()` call (passing the liveness
+  `session_id` this flow already obtains) once eVerify credentials/linkage are solid.
 - **Dark mode was removed on request** — the app is light-theme only
   (`src/index.css` has no `prefers-color-scheme: dark` block, and `dark:` variants were
   stripped from `components/ui/*`). Don't reintroduce `dark:` classes without being asked.
