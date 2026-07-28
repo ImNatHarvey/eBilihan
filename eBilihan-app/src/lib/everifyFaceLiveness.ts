@@ -30,9 +30,55 @@ function loadSdk(): Promise<void> {
   return loadPromise;
 }
 
+/**
+ * The SDK's own promise only settles when its hosted iframe (liveness.everify.gov.ph)
+ * either posts a completion message back or the user taps its own "X" close button —
+ * there's no way to reach into that iframe from here, so if that handshake never fires
+ * (e.g. the hosted page gets stuck) the promise would otherwise hang forever behind a
+ * full-screen overlay with no feedback. This timeout turns that into a visible error.
+ */
+const LIVENESS_TIMEOUT_MS = 120_000;
+
 export async function startFaceLiveness(pubKey: string): Promise<{ sessionId: string; photoUrl: string }> {
   await loadSdk();
   if (!window.eKYC) throw new Error("eVerify Face Liveness SDK did not initialize");
-  const response = await window.eKYC().start({ pubKey });
-  return { sessionId: response.result.session_id, photoUrl: response.result.photo_url };
+
+  // Diagnostic only: the SDK's own listener silently ignores any postMessage whose
+  // origin doesn't exactly match "https://liveness.everify.gov.ph", so if the hosted
+  // page finishes but the handshake doesn't line up, the SDK's promise just hangs with
+  // no signal at all. Logging every message here — regardless of origin — makes that
+  // "it never completed" case visible in devtools instead of a silent stuck white screen.
+  const debugListener = (event: MessageEvent) => {
+    console.info("[eVerify Face Liveness] window message received:", { origin: event.origin, data: event.data });
+  };
+  window.addEventListener("message", debugListener);
+
+  let response: EverifyLivenessResult;
+  try {
+    response = await Promise.race([
+      window.eKYC().start({ pubKey }),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Face Liveness check timed out. If the camera window is still open, close it and try again.")),
+          LIVENESS_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+  } catch (err) {
+    window.removeEventListener("message", debugListener);
+    // The SDK rejects with { status: "CANCELLED", result: undefined } (not an Error) when
+    // its own "X" button is tapped — normalize that into a real, message-bearing Error.
+    if (err && typeof err === "object" && "status" in err && (err as { status?: string }).status === "CANCELLED") {
+      throw new Error("Face Liveness check was cancelled.");
+    }
+    throw err;
+  }
+  window.removeEventListener("message", debugListener);
+
+  console.info("[eVerify Face Liveness] SDK result:", response);
+  const sessionId = response?.result?.session_id;
+  if (!sessionId) {
+    throw new Error("Face Liveness didn't return a valid session — please try again.");
+  }
+  return { sessionId, photoUrl: response.result.photo_url };
 }
