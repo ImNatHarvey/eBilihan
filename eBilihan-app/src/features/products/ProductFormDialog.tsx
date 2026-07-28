@@ -68,7 +68,7 @@ export function ProductFormDialog({ product, open, onOpenChange }: ProductFormDi
   });
 
   async function handleScanBarcode() {
-    const barcode = await scanOnce();
+    const barcode = await scanOnce("barcode");
     if (barcode) setForm((f) => ({ ...f, barcode }));
   }
 

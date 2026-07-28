@@ -23,7 +23,7 @@ export function POSView() {
   async function handleScan() {
     setScanError(null);
     try {
-      const barcode = await scanOnce();
+      const barcode = await scanOnce("barcode");
       if (!barcode) return;
       const product = await getProductByBarcode(barcode);
       addProduct(product);
