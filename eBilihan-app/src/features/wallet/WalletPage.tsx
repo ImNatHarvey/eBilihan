@@ -68,7 +68,7 @@ export function WalletPage() {
                   <p className="text-xs text-brand-ink/50">Balance: PHP {loan.balance.toFixed(2)} of {loan.principal.toFixed(2)}</p>
                 </div>
                 <Badge variant={loan.status === "active" ? "default" : loan.status === "paid" ? "success" : "danger"}>
-                  {loan.status}
+                  {loan.status.charAt(0).toUpperCase() + loan.status.slice(1)}
                 </Badge>
               </CardContent>
             </Card>

@@ -4,7 +4,6 @@ import { User, WifiOff } from "lucide-react";
 import { PhoneFrame } from "./PhoneFrame";
 import { BottomNav } from "./BottomNav";
 import { WebBarcodeScannerModal } from "@/components/shared/WebBarcodeScannerModal";
-import { FaceLivenessCaptureModal } from "@/components/shared/FaceLivenessCaptureModal";
 import { Badge } from "@/components/ui/badge";
 import { useAuthStore } from "@/store/authStore";
 import logo from "@/assets/eBilihan-Logo.png";
@@ -72,7 +71,6 @@ export function AppShell() {
 
       <BottomNav />
       <WebBarcodeScannerModal />
-      <FaceLivenessCaptureModal />
     </PhoneFrame>
   );
 }
