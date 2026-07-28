@@ -151,7 +151,7 @@ router.post("/otp/confirm", async (req, res) => {
 
   const pending = pendingOtps.get(mobile);
   if (!pending || pending.otp !== otp || pending.expiresAtMs < Date.now()) {
-    return res.status(401).json({ error: "Invalid or expired OTP" });
+    return res.status(422).json({ error: "Invalid or expired OTP" });
   }
   pendingOtps.delete(mobile);
 
