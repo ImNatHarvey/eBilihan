@@ -1,0 +1,56 @@
+# Render Blueprint for the eBilihan backend (BFF). Deploy via: Render dashboard >
+# New > Blueprint > select this repo. Render reads this file automatically (it must
+# sit at the repo root — the actual Node project lives in eBilihan-app/server).
+#
+# Every env var below is marked `sync: false`, meaning Render will prompt you to type
+# the real value in during setup — nothing here or in git ever holds an actual secret.
+# See eBilihan-app/server/.env.example for where to get each value.
+services:
+  - type: web
+    name: ebilihan-server
+    runtime: node
+    rootDir: eBilihan-app/server
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 4000
+      - key: CORS_ORIGIN
+        value: "*" # tighten to your Vercel URL once you have it, e.g. https://ebilihan.vercel.app
+      - key: JWT_SECRET
+        generateValue: true # Render auto-generates a strong random value — no need to type one
+      - key: EGOVPH_BASE_URL
+        sync: false
+      - key: EGOVPH_PARTNER_CODE
+        sync: false
+      - key: EGOVPH_PARTNER_SECRET
+        sync: false
+      - key: EGOVPH_AUTHORIZE_URL
+        sync: false
+      - key: EVERIFY_BASE_URL
+        sync: false
+      - key: EVERIFY_CLIENT_ID
+        sync: false
+      - key: EVERIFY_CLIENT_SECRET
+        sync: false
+      - key: EVERIFY_PUBKEY
+        sync: false
+      - key: EMESSAGE_BASE_URL
+        sync: false
+      - key: EMESSAGE_API_TOKEN
+        sync: false
+      - key: EGOVPAY_BASE_URL
+        sync: false
+      - key: EGOVPAY_API_TOKEN
+        sync: false
+      - key: EGOVPAY_SETTLEMENT_TEMPLATE_UUID
+        sync: false
+      - key: EREPORT_BASE_URL
+        sync: false
+      - key: EREPORT_ACCESS_CODE
+        sync: false
+      - key: FACE_LIVENESS_BASE_URL
+        sync: false
+      - key: FACE_LIVENESS_API_KEY
+        sync: false
