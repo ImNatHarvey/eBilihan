@@ -295,10 +295,12 @@ code — replace its internals (only) once real eGovchain API docs exist.
     what a real `resolveEgovphProfile(exchangeCode)` call would return. Both
     "Login via eGovPH SSO" and registration's "Continue with eGovPH" button call this.
   - **Login**: no mobile-number input — it always targets the demo profile's number
-    (`DEMO_MOBILE_E164` in `src/lib/demoIdentity.ts`, currently `+639060585188`) via
-    `POST /auth/login/otp/start` / `/otp/confirm`, landing on a 6-box `OtpInput`
-    (`src/components/ui/otp-input.tsx`). Only works once a store has actually been
-    registered with that number.
+    (`DEMO_MOBILE_E164` in `src/lib/demoIdentity.ts`, sourced from `VITE_DEMO_MOBILE_E164`,
+    default `+639060585188`) via `POST /auth/login/otp/start` / `/otp/confirm`, landing
+    on a 6-box `OtpInput` (`src/components/ui/otp-input.tsx`). Only works once a store
+    has actually been registered with that number. **Must match `DEMO_MOBILE_E164` in
+    `server/.env`** (backing `DEMO_EGOVPH_PROFILE.mobile` in `server/src/routes/auth.ts`)
+    exactly, or first-time login 404s.
   - **Registration**: "Continue with eGovPH" fetches the demo profile (with an
     artificial ~900ms delay so it reads as a real fetch), then shows a "eGovPH Identity
     Verified" panel with the (read-only) verified name/email, an editable Store Name,

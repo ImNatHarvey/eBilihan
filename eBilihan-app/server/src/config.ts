@@ -61,4 +61,9 @@ export const config = {
     baseUrl: process.env.FACE_LIVENESS_BASE_URL ?? "",
     apiKey: process.env.FACE_LIVENESS_API_KEY ?? "",
   },
+
+  // Demo sign-in number standing in for a real eGovPH-linked mobile (see
+  // routes/auth.ts DEMO_EGOVPH_PROFILE). MUST exactly match VITE_DEMO_MOBILE_E164 in
+  // the frontend's .env, or first-time login 404s ("No eBilihan store registered").
+  demoMobileE164: process.env.DEMO_MOBILE_E164 || "+639060585188",
 };

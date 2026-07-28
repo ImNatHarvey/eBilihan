@@ -33,7 +33,7 @@ const DEMO_EGOVPH_PROFILE: EgovphProfile = {
   first_name: "JOSH HARVEY",
   last_name: "CRISOLOGO",
   email: "jharveycrisologo@gmail.com",
-  mobile: "+639060585188",
+  mobile: config.demoMobileE164,
 };
 
 /**
