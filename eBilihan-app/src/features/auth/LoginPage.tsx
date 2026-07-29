@@ -11,28 +11,31 @@ import { OtpInput } from "@/components/ui/otp-input";
 import { LocationPicker } from "@/components/shared/LocationPicker";
 import { registerStart, registerConfirm, loginOtpStart, loginOtpConfirm, fetchEgovphDemoProfile } from "@/api/auth";
 import { useAuthStore } from "@/store/authStore";
-import { DEMO_MOBILE_E164, maskMobile } from "@/lib/demoIdentity";
+import { maskMobile } from "@/lib/demoIdentity";
+import { normalizePhMobile } from "@/lib/phone";
 import logo from "@/assets/eBilihan-Logo.png";
 import type { EgovphProfile, StoreLocation } from "@/types";
 
-type LoginStep = "start" | "otp";
+type LoginStep = "start" | "mobile" | "otp";
 type RegisterStep = "start" | "details" | "otp";
 
 /**
  * eGovPH SSO login/registration. The exact authorize/redirect URL that hands back an
  * exchange_code was never present in the reviewed reference docs (see CLAUDE.md), so
- * both "Login via eGovPH SSO" and "Continue with eGovPH" currently go through a demo
- * stand-in (GET /auth/egovph/demo-profile, mobile-number + eMessage OTP) instead of a
- * real SSO round-trip. The real-SSO code path (Browser.open) is left in place and takes
- * over automatically once VITE_EGOVPH_AUTHORIZE_URL is set.
+ * both flows go through a stand-in instead of a real SSO round-trip: "Login via eGovPH
+ * SSO" now prompts for any mobile number and auto-provisions a store for it on first
+ * OTP verification, while "Continue with eGovPH" (registration) still uses the fixed
+ * demo profile (GET /auth/egovph/demo-profile). The real-SSO code path (Browser.open)
+ * is left in place and takes over automatically once VITE_EGOVPH_AUTHORIZE_URL is set.
  */
 export function LoginPage() {
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
   const [mode, setMode] = useState<"login" | "register">("login");
 
-  // --- login (demo mobile number + eMessage OTP) ---
+  // --- login (user-entered mobile number + eMessage OTP) ---
   const [loginStep, setLoginStep] = useState<LoginStep>("start");
+  const [mobile, setMobile] = useState("");
   const [loginOtp, setLoginOtp] = useState("");
 
   // --- register (demo eGovPH profile fetch + Location + eMessage OTP) ---
@@ -49,16 +52,32 @@ export function LoginPage() {
 
   async function handleLoginSubmit() {
     setError(null);
-    setIsLoading(true);
-    try {
-      const authorizeUrl = import.meta.env.VITE_EGOVPH_AUTHORIZE_URL;
-      if (authorizeUrl) {
+    const authorizeUrl = import.meta.env.VITE_EGOVPH_AUTHORIZE_URL;
+    if (authorizeUrl) {
+      setIsLoading(true);
+      try {
         // Real eGovPH SSO redirect flow, once configured. Returning here still needs a
         // deep-link listener to capture exchange_code and call ssoLogin() — not built yet.
         await Browser.open({ url: authorizeUrl });
-        return;
+      } finally {
+        setIsLoading(false);
       }
-      await loginOtpStart(DEMO_MOBILE_E164);
+      return;
+    }
+    setLoginStep("mobile");
+  }
+
+  async function handleSendOtp() {
+    setError(null);
+    const normalized = normalizePhMobile(mobile);
+    if (!normalized) {
+      setError("Enter a valid PH mobile number (e.g. 09171234567)");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      await loginOtpStart(normalized);
+      setMobile(normalized);
       setLoginStep("otp");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not send login code");
@@ -71,7 +90,7 @@ export function LoginPage() {
     setError(null);
     setIsLoading(true);
     try {
-      const { token, owner } = await loginOtpConfirm(DEMO_MOBILE_E164, loginOtp);
+      const { token, owner } = await loginOtpConfirm(mobile, loginOtp);
       await login(token, owner);
       navigate("/");
     } catch (err) {
@@ -138,6 +157,7 @@ export function LoginPage() {
     setMode(mode === "login" ? "register" : "login");
     setError(null);
     setLoginStep("start");
+    setMobile("");
     setRegisterStep("start");
     setProfile(null);
     setPendingRegistration(null);
@@ -157,7 +177,7 @@ export function LoginPage() {
           {mode === "login" && loginStep === "start" && (
             <>
               <p className="text-sm text-brand-ink/60">
-                We&apos;ll send a one-time code to your eGovPH-linked number ({maskMobile(DEMO_MOBILE_E164)}).
+                We&apos;ll send a one-time code to your eGovPH-linked mobile number.
               </p>
               {error && <Badge variant="danger">{error}</Badge>}
               <Button size="lg" onClick={handleLoginSubmit} disabled={isLoading}>
@@ -166,15 +186,38 @@ export function LoginPage() {
             </>
           )}
 
+          {mode === "login" && loginStep === "mobile" && (
+            <>
+              <div>
+                <Label htmlFor="loginMobile">Mobile Number</Label>
+                <Input
+                  id="loginMobile"
+                  inputMode="tel"
+                  autoFocus
+                  value={mobile}
+                  onChange={(e) => setMobile(e.target.value)}
+                  placeholder="09171234567"
+                />
+              </div>
+              {error && <Badge variant="danger">{error}</Badge>}
+              <Button size="lg" onClick={handleSendOtp} disabled={!mobile || isLoading}>
+                Send OTP
+              </Button>
+              <Button variant="link" onClick={() => { setLoginStep("start"); setError(null); }}>
+                Back
+              </Button>
+            </>
+          )}
+
           {mode === "login" && loginStep === "otp" && (
             <>
-              <Label>Enter the 6-digit code sent to {maskMobile(DEMO_MOBILE_E164)}</Label>
+              <Label>Enter the 6-digit code sent to {maskMobile(mobile)}</Label>
               <OtpInput value={loginOtp} onChange={setLoginOtp} />
               {error && <Badge variant="danger">{error}</Badge>}
               <Button size="lg" onClick={handleLoginOtpConfirm} disabled={loginOtp.length !== 6 || isLoading}>
                 Verify &amp; Sign In
               </Button>
-              <Button variant="link" onClick={() => { setLoginStep("start"); setError(null); }}>
+              <Button variant="link" onClick={() => { setLoginStep("mobile"); setError(null); }}>
                 Back
               </Button>
             </>

@@ -10,6 +10,7 @@ import { requireAuth } from "../middleware/requireAuth.js";
 
 const router = Router();
 const generateOtp = customAlphabet("0123456789", 6);
+const PH_MOBILE_RE = /^\+639\d{9}$/;
 
 type EgovphProfile = {
   uniqid: string;
@@ -126,11 +127,13 @@ router.post("/sso/login", async (req, res) => {
  * Mobile-number + eMessage OTP login: a stand-in for real eGovPH SSO login while
  * EGOVPH_AUTHORIZE_URL is unknown (see CLAUDE.md). Sends the code regardless of
  * whether a store already exists for this number — /login/otp/confirm below decides
- * whether that means "log in" or "auto-provision the demo store".
+ * whether that means "log in" or "auto-provision a new store".
  */
 router.post("/login/otp/start", async (req, res) => {
   const { mobile } = req.body as { mobile?: string };
-  if (!mobile) return res.status(422).json({ error: "mobile is required" });
+  if (!mobile || !PH_MOBILE_RE.test(mobile)) {
+    return res.status(422).json({ error: "Enter a valid PH mobile number" });
+  }
 
   const otp = generateOtp();
   pendingOtps.set(mobile, { otp, expiresAtMs: Date.now() + 5 * 60_000 });
@@ -154,17 +157,16 @@ router.post("/login/otp/confirm", async (req, res) => {
 
   let owner = findOwnerByMobile(mobile);
   if (!owner) {
-    // Only the demo identity auto-provisions on first login — a real mobile number
-    // (once real eGovPH SSO exists) should still have to go through /register/*.
-    if (mobile !== DEMO_EGOVPH_PROFILE.mobile) {
-      return res.status(404).json({ error: "No eBilihan store registered with that mobile number" });
-    }
+    // Any mobile number that verifies its OTP for the first time auto-provisions a
+    // brand-new store here — there's no real eGovPH SSO yet to source a real name/
+    // profile from, so placeholder identity/store fields stand in until the owner
+    // edits them (or until real SSO replaces this whole stand-in, see CLAUDE.md).
     owner = {
       id: randomUUID(),
-      egovphUniqid: DEMO_EGOVPH_PROFILE.uniqid,
-      email: DEMO_EGOVPH_PROFILE.email,
-      mobile: DEMO_EGOVPH_PROFILE.mobile,
-      fullName: `${DEMO_EGOVPH_PROFILE.first_name} ${DEMO_EGOVPH_PROFILE.last_name}`.trim(),
+      egovphUniqid: `DEMO-${randomUUID()}`,
+      email: `${mobile.replace(/\D/g, "")}@ebilihan.demo`,
+      mobile,
+      fullName: "New Store Owner",
       storeName: DEMO_DEFAULT_STORE_NAME,
       location: DEMO_DEFAULT_LOCATION,
       createdAt: new Date().toISOString(),
