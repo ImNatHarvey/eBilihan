@@ -17,7 +17,8 @@ Capacitor, and integrates six eGOV APIs: **eGovPH SSO**, **eMessage**, **eGovPay
 - **Reports** — submit civic complaints/reports (scam, overpricing, fire, etc.) through
   eReport, with a dedicated region/province/city/barangay picker.
 - **eGovPH-linked sign-in** — OTP-based login/registration standing in for a full SSO
-  round-trip (see [Demo / test sign-in](#demo--test-sign-in) below).
+  round-trip. Login works with **any** PH mobile number, not just a fixed demo one —
+  see [Sign-in flow](#sign-in-flow) below.
 
 ## Tech stack
 
@@ -48,24 +49,45 @@ Prerequisites: Node.js 20+, npm.
 
 Frontend and backend have separate `node_modules` and must be installed independently.
 
+Both processes must be running **at the same time**, in two separate terminals, for the
+whole time you're testing — the frontend is just a static Vite dev server; every OTP,
+login, product, order, wallet, and report call is proxied through the backend. If the
+backend isn't running (or has crashed), the frontend shows: *"Can't reach the eBilihan
+server. Make sure it's running (cd server && npm run dev) and that VITE_API_BASE_URL
+points to it."* — see [Troubleshooting](#troubleshooting) below.
+
 ### 1. Backend
 
 ```bash
 cd server
 npm install
 cp .env.example .env   # fill in your eGov API credentials
-npm run dev             # http://localhost:4000
+npm run dev             # http://localhost:4000 — leave this terminal running
 ```
+
+Confirm it actually started: the terminal should print
+`eBilihan server listening on http://localhost:4000` with no errors. At minimum,
+`EMESSAGE_BASE_URL` and `EMESSAGE_API_TOKEN` must be set to real values for OTP SMS to
+send — see [Environment variables](#environment-variables).
 
 ### 2. Frontend
 
-In a second terminal:
+In a **second, separate** terminal (don't close the backend one):
 
 ```bash
 npm install
 cp .env.example .env   # point VITE_API_BASE_URL at the backend above
 npm run dev             # http://localhost:5173
 ```
+
+`VITE_API_BASE_URL` must point at wherever the backend from step 1 is actually
+reachable:
+- Testing in a desktop browser on the same machine: `http://localhost:4000`.
+- Testing on a physical phone/emulator over the same Wi-Fi/LAN (needed for camera-based
+  barcode/QR scanning, which requires a secure context): use your machine's current LAN
+  IP, e.g. `http://192.168.1.23:4000`. This IP can change across reboots or Wi-Fi
+  reconnects — if login/API calls stop working, recheck your machine's current IP
+  (`ipconfig` on Windows, `ifconfig`/`ip addr` on macOS/Linux) against this value.
 
 ### Mobile (Capacitor)
 
@@ -84,18 +106,59 @@ See `.env.example` (frontend) and `server/.env.example` (backend) for the full,
 commented list. Frontend `.env` only ever holds URLs and a public key — real eGov
 secrets live in `server/.env` and are never exposed to the client.
 
-## Demo / test sign-in
+## Sign-in flow
 
-There's no username/password — sign-in is OTP-based, targeting a demo mobile number
-(standing in for a real eGovPH SSO identity, since login doesn't yet do a full SSO
-round-trip). The number is configurable via env var and **must match exactly** between
-frontend and backend:
+There's no username/password — sign-in is OTP-based over SMS, standing in for a real
+eGovPH SSO identity (login doesn't yet do a full SSO round-trip).
 
-- `VITE_DEMO_MOBILE_E164` (frontend `.env`)
-- `DEMO_MOBILE_E164` (`server/.env`)
+### Login (any mobile number)
 
-On first login, a demo store auto-provisions under that number with sample products
-already seeded, so testing can start immediately.
+1. Tap **"Login via eGovPH SSO"**.
+2. Enter **any** valid PH mobile number (`09XXXXXXXXX` or `+639XXXXXXXXX` — both
+   formats are accepted and normalized automatically) and tap **Send OTP**.
+3. A 6-digit code is sent by SMS via eMessage to that exact number.
+4. Enter the code and tap **Verify & Sign In**.
+
+There is no restriction to a single hardcoded number — this works for any evaluator's
+own real phone. On the **first** successful OTP verification for a given number, a
+brand-new store auto-provisions **instantly**: a placeholder owner profile, a default
+store name, and the same 6 seeded starter products every store gets
+(`server/src/store/db.ts` `seedDemoProducts`). No separate registration step is
+required. Logging in again later with the same number signs back into that same store
+(it won't re-seed or duplicate products).
+
+### Register ("New store? Register here")
+
+A separate flow, unchanged: it fetches a stand-in eGovPH profile
+(`GET /auth/egovph/demo-profile` — not real SSO, see the doc comments in
+`server/src/routes/auth.ts`), lets you set a real Store Name and pick a Location
+(Region/Province/City/Barangay), then OTPs that profile's mobile number before
+creating the store.
+
+### Remaining demo-number env vars
+
+`VITE_DEMO_MOBILE_E164` (frontend `.env`) / `DEMO_MOBILE_E164` (`server/.env`) still
+exist, but **no longer gate login**. They now only affect:
+- The Register flow's stand-in eGovPH profile (`DEMO_EGOVPH_PROFILE.mobile`).
+- The Loan-verification demo flow's borrower/OTP number
+  (`LoanVerificationFlow.tsx`).
+
+### Troubleshooting
+
+- **"Can't reach the eBilihan server..."** — the backend isn't running, crashed, or
+  `VITE_API_BASE_URL` points somewhere unreachable. Confirm `cd server && npm run dev`
+  is running in its own terminal and printed `eBilihan server listening on
+  http://localhost:4000` with no errors, and that `VITE_API_BASE_URL` matches how you're
+  accessing the backend (see [Getting started](#getting-started)).
+- **OTP request succeeds, but the SMS never arrives on a given number** — this is a
+  known limitation of the current eMessage API credential, not an app bug. eMessage's
+  `POST /messaging/v1/sms/push` returns `{"data":{"message":"SMS was successfully
+  created."}}` for **any** valid number, including ones it never actually delivers to —
+  some SMS-gateway credentials only guarantee real delivery to a small set of
+  pre-registered/whitelisted test numbers even though the API itself accepts every
+  request. If evaluators report OTPs never arriving, check with eGovPH/hackathon
+  organizers about lifting any sandbox/whitelist restriction on the `EMESSAGE_API_TOKEN`
+  in use, rather than assuming the login code itself is broken.
 
 ## Security model
 
