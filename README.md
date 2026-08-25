@@ -46,45 +46,48 @@ inside the built mobile bundle — see [Security model](#security-model).
 
 ## Getting started
 
-Prerequisites: Node.js 20+, npm.
+**Full instructions: [`SETUP.md`](SETUP.md)** — prerequisites, both installs, the two-terminal
+run, how to verify it works before spending an API credit, the Android build, and
+troubleshooting. Every command there states the directory it runs from.
 
-Frontend and backend have separate `node_modules` and must be installed independently.
-
-### 1. Backend
+Quickstart, from the repository root. Node 20.19+ or 22.12+; two packages, installed
+separately; **backend first**:
 
 ```bash
-cd server
+# Terminal 1 — backend, port 4000
+cd eBilihan-app/server
 npm install
-cp .env.example .env   # fill in your eGov API credentials
-npm run dev             # http://localhost:4000
+cp .env.example .env      # then fill it in — see the credentials guide below
+npm run dev
 ```
 
-### 2. Frontend
-
-In a second terminal:
-
 ```bash
+# Terminal 2 — frontend, port 5173
+cd eBilihan-app
 npm install
-cp .env.example .env   # point VITE_API_BASE_URL at the backend above
-npm run dev             # http://localhost:5173
+cp .env.example .env      # defaults are correct for local development
+npm run dev
 ```
 
-### Mobile (Capacitor)
-
-```bash
-npm run build                  # build web assets first
-npx cap add android            # first-time only
-npx cap add ios                # first-time only, macOS + Xcode required
-npx cap sync                   # copy web assets + plugins into native projects
-npx cap open android           # opens Android Studio
-npx cap open ios               # opens Xcode
-```
+Open <http://localhost:5173> and sign in with a sandbox account (`+639090000001`, OTP
+`123456`, PIN `000000`).
 
 ## Environment variables
 
-See `.env.example` (frontend) and `server/.env.example` (backend) for the full,
-commented list. Frontend `.env` only ever holds URLs and a public key — real eGov
-secrets live in `server/.env` and are never exposed to the client.
+Both `.env.example` files document every variable inline — what it is, what breaks without
+it, which portal catalog issues it, and whether the portal shows it only once.
+
+- `eBilihan-app/server/.env.example` — 22 variables, including all seven shown-once secrets.
+- `eBilihan-app/.env.example` — 3 variables, all URLs. **No secret ever belongs here**: Vite
+  inlines `VITE_` variables into the bundle that ships inside the APK.
+
+**To obtain the actual values:**
+[`eBilihanReference/CREDENTIALS_GUIDE.md`](eBilihanReference/CREDENTIALS_GUIDE.md) walks the
+six API catalogs in the order to do them, maps each returned value to its variable, and marks
+clearly where the portal's own documentation runs out.
+
+Open questions for the portal's AI assistant — two of which change code — are in
+[`eBilihanReference/PORTAL_QUESTIONS.md`](eBilihanReference/PORTAL_QUESTIONS.md).
 
 ## Signing in
 
