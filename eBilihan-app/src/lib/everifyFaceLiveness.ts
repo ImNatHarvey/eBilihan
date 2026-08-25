@@ -1,13 +1,17 @@
 /**
- * Loader for eVerify's own embedded "Face Liveness Web SDK" — per
- * eBilihanReference/eGOV API/eVerify/integration.png, this is a client-side <script>
- * that resolves a face_liveness_session_id which is then sent (via our backend) to
- * eVerify's QR Verify / Verify Personal Information endpoints for the strict
+ * Loader for eVerify's own embedded "Face Liveness Web SDK".
+ *
+ * Per the NationalID eVerify integration guide, this is a client-side <script> that
+ * resolves a `session_id`, which is then sent (via our backend) to eVerify's QR Verify /
+ * Verify Personal Information endpoints as `face_liveness_session_id` — the strict
  * identification step in the Loan Management flow.
  *
- * This is deliberately separate from src/api/ (which only calls our own backend):
- * the SDK talks directly to eVerify's liveness-capture domain from the device, and
- * only the resulting session_id — never a secret — ever reaches our backend.
+ * Deliberately separate from src/api/ (which only calls our own backend): the SDK talks
+ * directly to eVerify's liveness-capture domain from the device, and only the resulting
+ * session_id — never a secret — reaches our backend.
+ *
+ * Not to be confused with the standalone Face Liveness REST product (src/api/liveness.ts).
+ * Their session tokens live in different namespaces and are not interchangeable.
  */
 const SDK_URL =
   import.meta.env.VITE_EVERIFY_LIVENESS_SDK_URL ??
@@ -23,7 +27,11 @@ function loadSdk(): Promise<void> {
       script.src = SDK_URL;
       script.async = true;
       script.onload = () => resolve();
-      script.onerror = () => reject(new Error("Failed to load eVerify Face Liveness SDK"));
+      script.onerror = () => {
+        // Don't cache the failure — let a retry attempt the load again.
+        loadPromise = null;
+        reject(new Error("Failed to load eVerify Face Liveness SDK"));
+      };
       document.head.appendChild(script);
     });
   }
@@ -31,62 +39,106 @@ function loadSdk(): Promise<void> {
 }
 
 /**
- * The SDK's own promise only settles when its hosted iframe (liveness.everify.gov.ph)
- * posts a completion message back whose `event.origin` exactly matches its own domain
- * string, or when the user taps the SDK's own tiny "X" button — there is no exposed
- * reference to that overlay, so if the completion handshake never fires the promise
- * (and the full-screen white overlay it created) would otherwise hang forever with zero
- * feedback (confirmed live: the check runs, but the app never advances afterward).
+ * The check did not produce a result — it timed out, the user backed out, or the SDK
+ * never posted its completion message.
  *
- * DEMO SAFETY NET: after GRACE_MS with no signal from the SDK, we stop waiting on it —
- * forcibly tear down whatever it appended to <body> (a plain DOM node, findable by
- * diffing body.children before/after `.start()`, since we don't get a reference back)
- * and continue the Loan flow anyway. This still runs the real biometric check (real
- * camera, real eVerify-hosted liveness UI) — it just refuses to let an unresolved
- * third-party handshake block the rest of the app if that check's result never reaches
- * us. Remove this fallback once the postMessage handshake is confirmed reliable.
+ * This is emphatically **not** the same event as eVerify rejecting a match, and the two
+ * must never be shown with the same wording. "We couldn't match this borrower" accuses a
+ * real customer of presenting a false identity; if the truth is that a camera widget hung,
+ * the store owner may refuse service — or treat them as attempting fraud — over a UI bug.
+ * A failure of ours must never be rendered as a finding about a person.
  */
-const GRACE_MS = 20_000;
-
-export async function startFaceLiveness(pubKey: string): Promise<{ sessionId: string; photoUrl: string }> {
-  await loadSdk();
-  if (!window.eKYC) throw new Error("eVerify Face Liveness SDK did not initialize");
-
-  const debugListener = (event: MessageEvent) => {
-    console.info("[eVerify Face Liveness] window message received:", { origin: event.origin, data: event.data });
-  };
-  window.addEventListener("message", debugListener);
-
-  const bodyChildrenBefore = new Set(Array.from(document.body.children));
-  const sdkPromise = window.eKYC().start({ pubKey });
-
-  const gracePromise = new Promise<EverifyLivenessResult>((resolve) => {
-    setTimeout(() => {
-      for (const child of Array.from(document.body.children)) {
-        if (!bodyChildrenBefore.has(child)) {
-          console.warn("[eVerify Face Liveness] No response after grace period — closing the overlay and continuing.");
-          child.remove();
-        }
-      }
-      resolve({ status: "TIMED_OUT", result: { photo: "", session_id: `demo-liveness-${Date.now()}`, photo_url: "" } });
-    }, GRACE_MS);
-  });
-
-  let response: EverifyLivenessResult;
-  try {
-    response = await Promise.race([sdkPromise, gracePromise]);
-  } catch (err) {
-    window.removeEventListener("message", debugListener);
-    // The SDK rejects with { status: "CANCELLED", result: undefined } (not an Error) when
-    // its own "X" button is tapped — normalize that into a real, message-bearing Error.
-    if (err && typeof err === "object" && "status" in err && (err as { status?: string }).status === "CANCELLED") {
-      throw new Error("Face Liveness check was cancelled.");
-    }
-    throw err;
+export class LivenessIncompleteError extends Error {
+  readonly kind = "incomplete" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "LivenessIncompleteError";
   }
-  window.removeEventListener("message", debugListener);
+}
 
-  console.info("[eVerify Face Liveness] result:", response);
-  const sessionId = response?.result?.session_id || `demo-liveness-${Date.now()}`;
-  return { sessionId, photoUrl: response?.result?.photo_url ?? "" };
+/**
+ * How long to wait for the SDK's completion handshake before giving up.
+ *
+ * CLAUDE.md records this hang happening live: the check runs, but the iframe's
+ * postMessage never arrives and the promise stays pending forever. Waiting indefinitely
+ * behind a spinner is not "failing closed", it is just failing invisibly.
+ */
+const RESPONSE_TIMEOUT_MS = 45_000;
+
+/**
+ * Resolves with a real `session_id` from eVerify, or rejects. It never invents one.
+ *
+ * An earlier version waited 20 seconds and then continued the loan flow with a fabricated
+ * `demo-liveness-<timestamp>` id. That was not a safety net: eVerify rejects any session
+ * id it did not issue, so it could only ever produce a failed match — while making the UI
+ * look like the check had succeeded. A liveness check that cannot report its result must
+ * fail closed, because its whole purpose is to stop a loan being recorded against someone
+ * who was never present.
+ *
+ * `signal` lets the caller offer a Cancel button; the timeout covers the case where the
+ * user is waiting on something that will never arrive.
+ */
+export async function startFaceLiveness(
+  pubKey: string,
+  signal?: AbortSignal,
+): Promise<{ sessionId: string; photoUrl: string }> {
+  if (!pubKey) {
+    // The SDK throws synchronously on a blank pubKey, which previously aborted the loan
+    // flow with no visible reason. Fail with something a person can act on instead.
+    throw new LivenessIncompleteError(
+      "The face check isn't configured — check EVERIFY_PUBKEY on the server.",
+    );
+  }
+
+  await loadSdk();
+  if (!window.eKYC) {
+    throw new LivenessIncompleteError("The face check couldn't start. Please try again.");
+  }
+
+  // The SDK appends its overlay to <body> and hands back no reference to it, so the only
+  // way to tear it down after a timeout is to diff the children.
+  const before = new Set(Array.from(document.body.children));
+  const removeOverlay = () => {
+    for (const child of Array.from(document.body.children)) {
+      if (!before.has(child)) child.remove();
+    }
+  };
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+
+  try {
+    const response = await Promise.race<EverifyLivenessResult>([
+      window.eKYC().start({ pubKey }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new LivenessIncompleteError("The face check didn't respond. Please try again.")),
+          RESPONSE_TIMEOUT_MS,
+        );
+        if (signal) {
+          onAbort = () => reject(new LivenessIncompleteError("The face check was cancelled."));
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }),
+    ]);
+
+    const sessionId = response?.result?.session_id;
+    if (!sessionId) {
+      throw new LivenessIncompleteError("The face check didn't return a session. Please try again.");
+    }
+    return { sessionId, photoUrl: response.result.photo_url ?? "" };
+  } catch (err) {
+    // The SDK rejects with { status: "CANCELLED" } — a plain object, not an Error — when
+    // its own close button is tapped.
+    if (err && typeof err === "object" && "status" in err && (err as { status?: string }).status === "CANCELLED") {
+      throw new LivenessIncompleteError("The face check was cancelled.");
+    }
+    if (err instanceof LivenessIncompleteError) throw err;
+    throw new LivenessIncompleteError("The face check didn't finish. Please try again.");
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    removeOverlay();
+  }
 }
