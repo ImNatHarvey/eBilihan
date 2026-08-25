@@ -4,8 +4,18 @@ import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { everifyClient } from "../lib/httpClients.js";
 import { getCachedToken } from "../lib/tokenCache.js";
+import { sendUpstreamError } from "../lib/upstreamError.js";
 import { requireAuth } from "../middleware/requireAuth.js";
-import { loans, owners, pendingOtps, type Loan } from "../store/db.js";
+import {
+  loans,
+  owners,
+  pendingOtps,
+  passedLivenessChecks,
+  pruneExpired,
+  verifiedBorrowers,
+  VERIFICATION_TTL_MS,
+  type Loan,
+} from "../store/db.js";
 import { appendTransaction } from "../lib/egovchain.js";
 import { sendSms } from "../lib/emessage.js";
 
@@ -25,23 +35,67 @@ async function getEverifyAccessToken(): Promise<string> {
 }
 
 /**
- * Verifies a borrower before a loan can be created: scans the borrower's eGovPH QR
- * code and matches it against a face_liveness_session_id captured moments earlier via
- * the eVerify Face Liveness Web SDK (window.eKYC().start()). This is the "strict
- * identification" step from the project brief — see eVerify > QR Verify.
+ * eVerify's matched-result codes.
  *
- * A borrower only clears this check (and therefore can be loaned to) when eVerify
- * returns a matched profile with code "AAA001" — the "Success (Matched)" example
- * response. Any other code (e.g. face mismatch) must block loan creation.
- *
- * NOT currently called by LoanVerificationFlow.tsx — per explicit request, that flow
- * uses a hardcoded demo borrower + a real front-camera capture that always succeeds
- * instead (real eVerify matching needs a working EVERIFY_PUBKEY + a QR the demo
- * account is actually eVerify-linked to). Kept working and available for when that's
- * viable; see DEMO_BORROWER_PROFILE in LoanVerificationFlow.tsx.
+ * NARROW-ME: confirm the authoritative code list via the portal AI assistant, then reduce
+ * this to the single correct value. Both are accepted today only because the docs'
+ * own examples disagree — QR Verify's "Success (Matched)" shows "AAA001" while Verify
+ * Personal Information's success shows "AAA000" — and guessing wrong would silently block
+ * every legitimate loan. If it turns out one of these means "matched with low confidence",
+ * we are currently approving loans we should refuse.
+ */
+const MATCHED_CODES = new Set(["AAA000", "AAA001"]);
+
+type EverifyMatch = {
+  code?: string;
+  full_name?: string;
+  reference?: string;
+  token?: string;
+  [key: string]: unknown;
+};
+
+/**
+ * Turns an eVerify response into a verdict AND, when matched, a server-held record the
+ * client cannot forge. The client only ever receives `verificationId` plus a name to
+ * display — never anything it can substitute at loan-creation time.
+ */
+function recordVerification(
+  ownerId: string,
+  data: EverifyMatch | undefined,
+  livenessSessionId: string,
+  fallbackIdentifier: string,
+) {
+  const matched = !!data?.code && MATCHED_CODES.has(data.code);
+  if (!matched || !data?.full_name) {
+    return {
+      matched: false as const,
+      // "rejected" means eVerify looked and said no — a real finding about a real person.
+      // It is deliberately distinct from a liveness check that never completed, which
+      // never reaches this function at all.
+      reason: "eVerify could not match this person to the presented identity.",
+    };
+  }
+
+  const verificationId = randomUUID();
+  verifiedBorrowers.set(verificationId, {
+    ownerId,
+    borrowerName: data.full_name,
+    borrowerEgovphUniqid: String(data.reference ?? fallbackIdentifier),
+    borrowerPhilsysNumber: fallbackIdentifier,
+    livenessSessionId,
+    expiresAtMs: Date.now() + VERIFICATION_TTL_MS,
+  });
+
+  return { matched: true as const, verificationId, borrowerName: data.full_name };
+}
+
+/**
+ * Verifies a borrower before a loan can be created: their National ID QR value plus a
+ * face_liveness_session_id captured moments earlier by the eVerify Face Liveness Web SDK,
+ * matched against PhilSys (eVerify > QR Verify).
  */
 router.post("/verify-borrower", async (req, res) => {
-  const { qrValue, faceLivenessSessionId } = req.body as { qrValue: string; faceLivenessSessionId: string };
+  const { qrValue, faceLivenessSessionId } = req.body as { qrValue?: string; faceLivenessSessionId?: string };
   if (!qrValue || !faceLivenessSessionId) {
     return res.status(422).json({ error: "qrValue and faceLivenessSessionId are required" });
   }
@@ -52,10 +106,47 @@ router.post("/verify-borrower", async (req, res) => {
       { value: qrValue, face_liveness_session_id: faceLivenessSessionId },
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
-    const matched = response.data?.data?.code === "AAA001";
-    res.json({ matched, profile: response.data?.data });
+    res.json(recordVerification(req.ownerId!, response.data?.data, faceLivenessSessionId, qrValue));
   } catch (err) {
-    res.status(502).json({ error: "eVerify QR verify failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Borrower verification");
+  }
+});
+
+/**
+ * The same check without a QR code, for a card that won't scan. Note this is the flow
+ * eVerify's own documentation leads with — "submit demographics + face_liveness_session_id
+ * to the Verify endpoint" — so it is the documented path, not a workaround.
+ */
+router.post("/verify-borrower/personal", async (req, res) => {
+  const { firstName, middleName, lastName, suffix, birthDate, faceLivenessSessionId } = req.body as {
+    firstName?: string;
+    middleName?: string;
+    lastName?: string;
+    suffix?: string;
+    birthDate?: string;
+    faceLivenessSessionId?: string;
+  };
+  if (!firstName || !lastName || !birthDate || !faceLivenessSessionId) {
+    return res.status(422).json({ error: "firstName, lastName, birthDate, and faceLivenessSessionId are required" });
+  }
+  try {
+    const accessToken = await getEverifyAccessToken();
+    const response = await everifyClient.post(
+      "/api/query",
+      {
+        first_name: firstName,
+        middle_name: middleName,
+        last_name: lastName,
+        suffix,
+        birth_date: birthDate,
+        face_liveness_session_id: faceLivenessSessionId,
+      },
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    const identifier = `${lastName.toUpperCase()}-${birthDate}`;
+    res.json(recordVerification(req.ownerId!, response.data?.data, faceLivenessSessionId, identifier));
+  } catch (err) {
+    sendUpstreamError(res, err, "Borrower verification");
   }
 });
 
@@ -80,109 +171,174 @@ router.get("/", (req, res) => {
   res.json({ data: list });
 });
 
-type LoanPayload = {
-  borrowerEgovphUniqid: string;
-  borrowerName: string;
-  borrowerPhilsysNumber: string;
-  borrowerMobile: string;
+/**
+ * Everything a client is allowed to say about a loan. The borrower's identity is
+ * conspicuously absent — that comes from the verification record alone.
+ */
+type LoanRequest = {
+  verificationId: string;
   principal: number;
   dueDate: string;
+  livenessToken?: string;
 };
 
-function createLoanRecord(ownerId: string, payload: LoanPayload): Loan {
+function validateLoanRequest(ownerId: string, body: Partial<LoanRequest>) {
+  pruneExpired();
+
+  const principal = Number(body.principal);
+  if (!Number.isFinite(principal) || principal <= 0) {
+    return { error: "A positive loan amount is required" as const };
+  }
+  if (!body.dueDate || Number.isNaN(new Date(body.dueDate).getTime())) {
+    return { error: "A valid due date is required" as const };
+  }
+  if (!body.verificationId) {
+    return { error: "This borrower has not been verified" as const };
+  }
+
+  const verification = verifiedBorrowers.get(body.verificationId);
+  // Scoped to the owner as well as checked for existence: a verification made by one
+  // store must not be usable to open a loan at another.
+  if (!verification || verification.ownerId !== ownerId) {
+    return { error: "This borrower has not been verified" as const };
+  }
+  if (verification.expiresAtMs < Date.now()) {
+    return { error: "The identity check has expired — please verify the borrower again" as const };
+  }
+
+  // High-value loans additionally require the OWNER to have proved they're present.
+  if (principal >= config.loans.livenessThresholdPhp) {
+    const check = body.livenessToken ? passedLivenessChecks.get(body.livenessToken) : undefined;
+    if (!check || check.ownerId !== ownerId || check.expiresAtMs < Date.now()) {
+      return {
+        error: `Loans of PHP ${config.loans.livenessThresholdPhp.toFixed(2)} or more need your own face check first` as const,
+        needsOwnerLiveness: true,
+      };
+    }
+    // Single-use: one check authorises one loan.
+    passedLivenessChecks.delete(body.livenessToken!);
+  }
+
+  return { verification, principal, dueDate: body.dueDate };
+}
+
+function createLoanRecord(
+  ownerId: string,
+  verification: { borrowerName: string; borrowerEgovphUniqid: string; borrowerPhilsysNumber: string },
+  principal: number,
+  dueDate: string,
+): Loan {
   const owner = owners.get(ownerId);
-  const termsOfPaymentText = buildTermsOfPayment(payload.principal, payload.borrowerName, payload.dueDate);
+  const termsOfPaymentText = buildTermsOfPayment(principal, verification.borrowerName, dueDate);
 
   const loan: Loan = {
     id: randomUUID(),
     ownerId,
-    borrowerEgovphUniqid: payload.borrowerEgovphUniqid,
-    borrowerName: payload.borrowerName,
-    borrowerPhilsysNumber: payload.borrowerPhilsysNumber,
-    principal: payload.principal,
-    balance: payload.principal,
+    borrowerEgovphUniqid: verification.borrowerEgovphUniqid,
+    borrowerName: verification.borrowerName,
+    borrowerPhilsysNumber: verification.borrowerPhilsysNumber,
+    principal,
+    balance: principal,
     termsOfPaymentText,
     status: "active",
     createdAt: new Date().toISOString(),
   };
   loans.set(loan.id, loan);
-  appendTransaction({ ownerId, type: "loan_issued", loanId: loan.id, principal: payload.principal });
+  appendTransaction({ ownerId, type: "loan_issued", loanId: loan.id, principal });
 
-  const dueDateLabel = new Date(payload.dueDate).toLocaleDateString("en-PH");
-  if (payload.borrowerMobile) {
-    sendSms(
-      payload.borrowerMobile,
-      `${owner?.storeName ?? "Your sari-sari store"} recorded a loan of PHP ${payload.principal.toFixed(2)} under your name. Due ${dueDateLabel}. Reply to this store for full terms.`,
-    ).catch(() => undefined);
-  }
+  const dueDateLabel = new Date(dueDate).toLocaleDateString("en-PH");
   if (owner?.mobile) {
-    sendSms(owner.mobile, `Loan agreement created for ${payload.borrowerName}: PHP ${payload.principal.toFixed(2)}, due ${dueDateLabel}.`).catch(() => undefined);
+    sendSms(
+      owner.mobile,
+      `Loan agreement created for ${verification.borrowerName}: PHP ${principal.toFixed(2)}, due ${dueDateLabel}.`,
+    ).catch(() => undefined);
   }
 
   return loan;
 }
 
 /**
- * OTP-gated loan creation: send a code to the number that'll receive the loan
- * agreement SMS (the store owner confirms it, same "prove control of this number"
- * pattern as login/registration — see pendingOtps in store/db.ts) before the loan is
- * actually recorded.
+ * OTP-gated loan creation. The code goes to the store owner's own eGovPH-linked mobile —
+ * a second factor over recording money, not an identity check (eGovPH already established
+ * who they are, and eVerify established who the borrower is).
  */
 router.post("/otp/start", async (req, res) => {
-  const { mobile } = req.body as { mobile?: string };
-  if (!mobile) return res.status(422).json({ error: "mobile is required" });
+  const owner = owners.get(req.ownerId!)!;
+  if (!owner.mobile) {
+    return res.status(422).json({ error: "Your eGovPH account has no mobile number on file" });
+  }
 
   const otp = generateOtp();
-  pendingOtps.set(mobile, { otp, expiresAtMs: Date.now() + 5 * 60_000 });
+  pendingOtps.set(owner.mobile, { otp, expiresAtMs: Date.now() + 5 * 60_000 });
   try {
-    await sendSms(mobile, `Your eBilihan loan confirmation code is ${otp}. It expires in 5 minutes.`);
-    res.json({ message: `OTP sent to ${mobile}` });
+    await sendSms(owner.mobile, `Your eBilihan loan confirmation code is ${otp}. It expires in 5 minutes.`);
+    res.json({ message: "OTP sent to your registered mobile number" });
   } catch (err) {
-    res.status(502).json({ error: "Could not send OTP via eMessage", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Sending your confirmation code");
   }
 });
 
-router.post("/otp/confirm", async (req, res) => {
-  const { mobile, otp, ...payload } = req.body as { mobile?: string; otp?: string } & LoanPayload;
-  if (!mobile || !otp) return res.status(422).json({ error: "mobile and otp are required" });
-  if (!payload.borrowerEgovphUniqid || !payload.borrowerName || !payload.principal || !payload.dueDate) {
-    return res.status(422).json({ error: "borrowerEgovphUniqid, borrowerName, principal, and dueDate are required" });
-  }
+router.post("/otp/confirm", (req, res) => {
+  const owner = owners.get(req.ownerId!)!;
+  const { otp, ...rest } = req.body as { otp?: string } & Partial<LoanRequest>;
+  if (!otp) return res.status(422).json({ error: "otp is required" });
 
-  const pending = pendingOtps.get(mobile);
+  const pending = owner.mobile ? pendingOtps.get(owner.mobile) : undefined;
   if (!pending || pending.otp !== otp || pending.expiresAtMs < Date.now()) {
     return res.status(422).json({ error: "Invalid or expired OTP" });
   }
-  pendingOtps.delete(mobile);
 
-  const loan = createLoanRecord(req.ownerId!, payload);
-  res.status(201).json({ data: loan });
-});
-
-/** Direct (non-OTP-gated) creation — kept for API completeness; the UI now goes through /otp/start + /otp/confirm above. */
-router.post("/", async (req, res) => {
-  const body = req.body as LoanPayload;
-  if (!body.borrowerEgovphUniqid || !body.borrowerName || !body.principal) {
-    return res.status(422).json({ error: "borrowerEgovphUniqid, borrowerName, and principal are required" });
+  const validated = validateLoanRequest(req.ownerId!, rest);
+  if ("error" in validated) {
+    return res.status(422).json({ error: validated.error, needsOwnerLiveness: validated.needsOwnerLiveness });
   }
-  const dueDate = body.dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  const loan = createLoanRecord(req.ownerId!, { ...body, dueDate });
+
+  // Only consume the OTP once the request is known-good, so a rejected loan doesn't
+  // force the owner to request a fresh code.
+  pendingOtps.delete(owner.mobile!);
+  verifiedBorrowers.delete(rest.verificationId!);
+
+  const loan = createLoanRecord(req.ownerId!, validated.verification, validated.principal, validated.dueDate);
   res.status(201).json({ data: loan });
 });
 
-router.put("/:id", (req, res) => {
-  const existing = loans.get(req.params.id);
-  if (!existing || existing.ownerId !== req.ownerId) return res.status(404).json({ error: "Loan not found" });
-  const updated: Loan = { ...existing, ...req.body, id: existing.id, ownerId: existing.ownerId };
-  loans.set(updated.id, updated);
-  res.json({ data: updated });
+/**
+ * Records a repayment. Deliberately narrow: the client says how much was paid, and the
+ * server decides what that means for the balance and status. It cannot set either
+ * directly — an earlier version spread `req.body` over the loan, which let a client
+ * rewrite a verified borrower's name, principal, or balance after the fact and made the
+ * eVerify check decorative.
+ */
+router.post("/:id/repayment", (req, res) => {
+  const loan = loans.get(req.params.id);
+  if (!loan || loan.ownerId !== req.ownerId) return res.status(404).json({ error: "Loan not found" });
+
+  const amount = Number((req.body as { amount?: number }).amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(422).json({ error: "A positive repayment amount is required" });
+  }
+  if (amount > loan.balance) {
+    return res.status(422).json({ error: "Repayment is larger than the outstanding balance" });
+  }
+
+  loan.balance = Number((loan.balance - amount).toFixed(2));
+  if (loan.balance === 0) loan.status = "paid";
+  loans.set(loan.id, loan);
+  appendTransaction({ ownerId: req.ownerId, type: "loan_repayment", loanId: loan.id, amount });
+
+  res.json({ data: loan });
 });
 
-router.delete("/:id", (req, res) => {
-  const existing = loans.get(req.params.id);
-  if (!existing || existing.ownerId !== req.ownerId) return res.status(404).json({ error: "Loan not found" });
-  loans.delete(req.params.id);
-  res.status(204).end();
+/** Marking a loan defaulted is the one other state change an owner may make directly. */
+router.post("/:id/default", (req, res) => {
+  const loan = loans.get(req.params.id);
+  if (!loan || loan.ownerId !== req.ownerId) return res.status(404).json({ error: "Loan not found" });
+  if (loan.status === "paid") return res.status(422).json({ error: "A settled loan can't be marked defaulted" });
+
+  loan.status = "defaulted";
+  loans.set(loan.id, loan);
+  appendTransaction({ ownerId: req.ownerId, type: "loan_defaulted", loanId: loan.id, balance: loan.balance });
+  res.json({ data: loan });
 });
 
 export default router;

@@ -9,9 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useCartStore } from "@/store/cartStore";
 import { useAuthStore } from "@/store/authStore";
-import { createOrder, markOrderPaymentStatus } from "@/api/orders";
-import { generatePayment, checkTransaction } from "@/api/payments";
+import { createOrder, refreshOrderPayment } from "@/api/orders";
+import { generatePayment } from "@/api/payments";
 import { buildReceiptPdf } from "@/lib/receipt";
+import { getApiErrorMessage } from "@/lib/apiError";
 import type { Order } from "@/types";
 import gcashLogo from "@/assets/gcash.png";
 import gotymeLogo from "@/assets/gotyme.jpeg";
@@ -31,7 +32,8 @@ const CHANNELS = [
   { id: "maribank", name: "Maribank", logo: maribankLogo },
 ];
 
-type PaymentState = { uuid: string; url: string | null; isReal: boolean };
+/** A real eGovPay transaction: its uuid and the hosted checkout URL to send the payer to. */
+type PaymentState = { uuid: string; url: string };
 
 export function CheckoutDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { items, total, clear } = useCartStore();
@@ -60,8 +62,9 @@ export function CheckoutDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   useEffect(() => {
     if (step === "qr" && payment && order) {
-      const content = payment.isReal ? payment.url! : `eBilihan Payment • Order ${order.id} • PHP ${order.total.toFixed(2)}`;
-      QRCode.toDataURL(content, { width: 220, margin: 1 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
+      // The QR encodes eGovPay's own hosted checkout URL — the customer scans it and pays
+      // on eGovPay's page, where the real channel picker lives.
+      QRCode.toDataURL(payment.url, { width: 220, margin: 1 }).then(setQrDataUrl).catch(() => setQrDataUrl(null));
     }
   }, [step, payment, order]);
 
@@ -73,7 +76,7 @@ export function CheckoutDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       setOrder(createdOrder);
       setStep("receipt");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create order");
+      setError(getApiErrorMessage(err, "Could not create order"));
     } finally {
       setIsBusy(false);
     }
@@ -86,24 +89,18 @@ export function CheckoutDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     try {
       const createdOrder = await createOrder(items, "gcash");
       setOrder(createdOrder);
-      try {
-        const generated = await generatePayment({
-          amount: createdOrder.total,
-          items: createdOrder.items.map((i) => ({ name: i.name, amount: i.unitPrice * i.quantity })),
-          txnid: createdOrder.id,
-          redirectUrl: "ebilihan://payment-complete",
-          callbackUrl: `${import.meta.env.VITE_API_BASE_URL}/payments/webhook`,
-        });
-        setPayment({ uuid: generated.uuid, url: generated.url, isReal: true });
-      } catch {
-        // eGovPay isn't reachable/configured yet (see server/.env EGOVPAY_*) — fall back
-        // to a local reference QR so the in-app checkout flow still works end-to-end for
-        // testing. Real payments resume automatically once those credentials are valid.
-        setPayment({ uuid: `local-${createdOrder.id}`, url: null, isReal: false });
-      }
+      // Only the order id goes up. The amount, the line items and the txnid are all read
+      // server-side from the stored order — so what the customer is asked to pay can never
+      // be a figure this device supplied.
+      const generated = await generatePayment({ orderId: createdOrder.id });
+      setPayment({ uuid: generated.uuid, url: generated.url });
       setStep("qr");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create order");
+      // No local fallback QR here on purpose: it produced a reference that looked like a
+      // payment but could never be settled or reconciled against eGovPay. A checkout that
+      // can't reach the gateway needs to say so, so the sale is taken in cash instead.
+      setError(getApiErrorMessage(err, "Could not start the eGovPay payment. Take this sale in cash, or try again."));
+      setStep("summary");
     } finally {
       setIsBusy(false);
     }
@@ -114,29 +111,17 @@ export function CheckoutDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     setError(null);
     setIsBusy(true);
     try {
-      const tx = await checkTransaction(payment.uuid);
-      if (tx.payment_status === "PAID" || tx.payment_status === "SETTLED") {
-        await markOrderPaymentStatus(order.id, "paid", payment.uuid);
-        setOrder({ ...order, paymentStatus: "paid" });
+      // The server asks eGovPay and writes the result. Nothing here asserts a status —
+      // this button requests a re-check, it does not report an outcome.
+      const { data: updated } = await refreshOrderPayment(order.id);
+      if (updated.paymentStatus === "paid") {
+        setOrder(updated);
         setStep("receipt");
       } else {
         setError("Not paid yet — complete the payment, then try again.");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not check payment status");
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  /** Marks the order paid directly — the real confirmation path when eGovPay's response is only a local fallback (see handleSelectChannel), or a dev shortcut for a real one. */
-  async function handleConfirmReceived() {
-    if (!order || !payment) return;
-    setIsBusy(true);
-    try {
-      await markOrderPaymentStatus(order.id, "paid", payment.uuid);
-      setOrder({ ...order, paymentStatus: "paid" });
-      setStep("receipt");
+      setError(getApiErrorMessage(err, "Could not check payment status"));
     } finally {
       setIsBusy(false);
     }
@@ -256,28 +241,18 @@ export function CheckoutDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
             {error && <Badge variant="danger">{error}</Badge>}
 
-            {payment.isReal ? (
-              <>
-                <Button variant="outline" className="w-full" onClick={() => Browser.open({ url: payment.url! })}>
-                  <ExternalLink className="h-4 w-4" /> Open Payment Page
-                </Button>
-                <Button className="w-full" onClick={handleCheckPaid} disabled={isBusy}>
-                  {isBusy && <Loader2 className="h-4 w-4 animate-spin" />} {isBusy ? "Checking..." : "I've Paid"}
-                </Button>
-                <button
-                  type="button"
-                  onClick={handleConfirmReceived}
-                  disabled={isBusy}
-                  className="flex items-center gap-1.5 text-[11px] font-medium text-brand-ink/40 underline underline-offset-2"
-                >
-                  {isBusy && <Loader2 className="h-3 w-3 animate-spin" />} Simulate Payment Success (testing only)
-                </button>
-              </>
-            ) : (
-              <Button className="w-full" onClick={handleConfirmReceived} disabled={isBusy}>
-                {isBusy && <Loader2 className="h-4 w-4 animate-spin" />} {isBusy ? "Confirming..." : "Confirm Payment Received"}
-              </Button>
-            )}
+            {/*
+              The order is only marked paid when eGovPay itself says so — either via
+              "I've Paid" (Check Transaction Details) or its callback to our webhook.
+              There is deliberately no local "mark as paid" shortcut: a sale recorded as
+              settled when no money moved corrupts the ledger the Wallet reads back.
+            */}
+            <Button variant="outline" className="w-full" onClick={() => Browser.open({ url: payment.url })}>
+              <ExternalLink className="h-4 w-4" /> Open Payment Page
+            </Button>
+            <Button className="w-full" onClick={handleCheckPaid} disabled={isBusy}>
+              {isBusy && <Loader2 className="h-4 w-4 animate-spin" />} {isBusy ? "Checking..." : "I've Paid"}
+            </Button>
           </div>
         )}
 

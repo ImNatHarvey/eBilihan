@@ -68,10 +68,42 @@ router.post("/", (req, res) => {
   res.status(201).json({ data: product });
 });
 
+/**
+ * Explicit allow-list rather than `{ ...existing, ...req.body }`. The spread let a client
+ * write any field it liked — including `createdAt`, and (before the id/ownerId guards were
+ * added) identity fields. Listing what may change is the only version of this that stays
+ * correct as the Product type grows.
+ */
+const EDITABLE_PRODUCT_FIELDS = [
+  "name",
+  "type",
+  "thumbnail",
+  "boughtPrice",
+  "sellingPrice",
+  "quantity",
+  "barcode",
+  "lowStockThreshold",
+] as const satisfies readonly (keyof Product)[];
+
 router.put("/:id", (req, res) => {
   const existing = products.get(req.params.id);
   if (!existing || existing.ownerId !== req.ownerId) return res.status(404).json({ error: "Product not found" });
-  const updated: Product = { ...existing, ...req.body, id: existing.id, ownerId: existing.ownerId, updatedAt: new Date().toISOString() };
+
+  const updated: Product = { ...existing, updatedAt: new Date().toISOString() };
+  for (const field of EDITABLE_PRODUCT_FIELDS) {
+    const value = (req.body as Record<string, unknown>)[field];
+    if (value !== undefined) {
+      (updated as Record<string, unknown>)[field] = value;
+    }
+  }
+
+  if (typeof updated.sellingPrice !== "number" || updated.sellingPrice < 0) {
+    return res.status(422).json({ error: "sellingPrice must be a non-negative number" });
+  }
+  if (!Number.isInteger(updated.quantity) || updated.quantity < 0) {
+    return res.status(422).json({ error: "quantity must be a non-negative whole number" });
+  }
+
   products.set(updated.id, updated);
   res.json({ data: updated });
 });

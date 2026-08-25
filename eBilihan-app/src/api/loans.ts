@@ -1,19 +1,36 @@
 import { api } from "./client";
-import type { Loan } from "@/types";
+import type { BorrowerVerification, Loan } from "@/types";
 
-export type BorrowerVerificationResult = {
-  matched: boolean;
-  profile?: {
-    code: string;
-    full_name: string;
-    first_name: string;
-    last_name: string;
-    face_url: string;
-  };
+export type BorrowerDemographics = {
+  firstName: string;
+  middleName?: string;
+  lastName: string;
+  suffix?: string;
+  birthDate: string;
 };
 
+/**
+ * eVerify > QR Verify: the borrower's scanned National ID QR matched against a live
+ * face-liveness session.
+ *
+ * On a match the server keeps the verified identity itself and returns only an opaque
+ * `verificationId`. The borrower's name comes back for display, but it is *not* what
+ * creates the loan — see `loanOtpConfirm`.
+ */
 export async function verifyBorrower(qrValue: string, faceLivenessSessionId: string) {
-  const { data } = await api.post<BorrowerVerificationResult>("/loans/verify-borrower", { qrValue, faceLivenessSessionId });
+  const { data } = await api.post<BorrowerVerification>("/loans/verify-borrower", {
+    qrValue,
+    faceLivenessSessionId,
+  });
+  return data;
+}
+
+/** eVerify > Verify Personal Information: the same check for a card that won't scan. */
+export async function verifyBorrowerByDetails(details: BorrowerDemographics, faceLivenessSessionId: string) {
+  const { data } = await api.post<BorrowerVerification>("/loans/verify-borrower/personal", {
+    ...details,
+    faceLivenessSessionId,
+  });
   return data;
 }
 
@@ -22,36 +39,37 @@ export async function listLoans() {
   return data.data;
 }
 
+/**
+ * What this device is allowed to say about a loan. The borrower's identity is absent on
+ * purpose — the server reads it from the verification record named by `verificationId`,
+ * so a loan cannot be opened against someone eVerify never matched.
+ */
 export type LoanInput = {
-  borrowerEgovphUniqid: string;
-  borrowerName: string;
-  borrowerPhilsysNumber: string;
-  borrowerMobile?: string;
+  verificationId: string;
   principal: number;
   dueDate: string;
+  /** Required only for loans at or above the server's high-value threshold. */
+  livenessToken?: string;
 };
 
-export async function createLoan(input: LoanInput) {
-  const { data } = await api.post<{ data: Loan }>("/loans", input);
-  return data.data;
-}
-
-/** OTP-gated loan creation — sends a confirmation code to `mobile` before recording anything. */
-export async function loanOtpStart(mobile: string) {
-  const { data } = await api.post<{ message: string }>("/loans/otp/start", { mobile });
+/** Sends a confirmation code to the owner's own eGovPH-linked mobile. */
+export async function loanOtpStart() {
+  const { data } = await api.post<{ message: string }>("/loans/otp/start");
   return data;
 }
 
-export async function loanOtpConfirm(mobile: string, otp: string, input: LoanInput) {
-  const { data } = await api.post<{ data: Loan }>("/loans/otp/confirm", { mobile, otp, ...input });
+export async function loanOtpConfirm(otp: string, input: LoanInput) {
+  const { data } = await api.post<{ data: Loan }>("/loans/otp/confirm", { otp, ...input });
   return data.data;
 }
 
-export async function updateLoan(id: string, input: Partial<Loan>) {
-  const { data } = await api.put<{ data: Loan }>(`/loans/${id}`, input);
+/** Records a repayment. The server decides what it does to the balance and status. */
+export async function recordRepayment(id: string, amount: number) {
+  const { data } = await api.post<{ data: Loan }>(`/loans/${id}/repayment`, { amount });
   return data.data;
 }
 
-export async function deleteLoan(id: string) {
-  await api.delete(`/loans/${id}`);
+export async function markLoanDefaulted(id: string) {
+  const { data } = await api.post<{ data: Loan }>(`/loans/${id}/default`);
+  return data.data;
 }

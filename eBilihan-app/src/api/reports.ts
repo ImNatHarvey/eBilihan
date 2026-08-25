@@ -29,22 +29,41 @@ export async function listReportTypes() {
   return data;
 }
 
+/**
+ * eReport's email OTP. This is a separate identity check from signing in — it unlocks a
+ * `report_view_token`, which is the only credential that can read reports back. Filing a
+ * complaint does not need it; looking one up afterwards does.
+ */
 export async function requestReportOtp(email: string) {
-  const { data } = await api.post("/reports/otp/request", { email });
+  const { data } = await api.post<{ code: number; already_verified: boolean; message: string }>(
+    "/reports/otp/request",
+    { email },
+  );
   return data;
 }
 
 export async function confirmReportOtp(email: string, otp: string) {
-  const { data } = await api.post("/reports/otp/confirm", { email, otp });
+  const { data } = await api.post<{ code: number; report_view_token: string; expires_at: string }>(
+    "/reports/otp/confirm",
+    { email, otp },
+  );
   return data;
 }
 
+/**
+ * What this device is allowed to say about an incident.
+ *
+ * The complainant's identity — name, mobile, email — is conspicuously absent: the server
+ * reads it from the signed-in owner record, which is itself mirrored read-only from their
+ * eGovPH profile. Sending it from here would mean an official complaint could be filed
+ * under an invented identity using our eReport credential.
+ *
+ * `gender` is the one identity field that can be supplied, and only as a fallback: eReport
+ * requires it and eGovPH omits it when the citizen didn't consent to share it. The server
+ * prefers its own copy whenever it has one.
+ */
 export type SubmitComplaintInput = {
-  mobile: string;
-  firstName: string;
-  lastName: string;
-  gender: string;
-  complainantEmail: string;
+  gender?: string;
   reportType: string;
   subject: string;
   message: string;
@@ -53,6 +72,8 @@ export type SubmitComplaintInput = {
   provinceCode: string;
   municipalityCode: string;
   barangayCode: string;
+  latitude?: string;
+  longitude?: string;
 };
 
 export async function submitComplaint(input: SubmitComplaintInput) {
@@ -60,12 +81,45 @@ export async function submitComplaint(input: SubmitComplaintInput) {
   return data;
 }
 
+/** One row of eReport's JSON:API report list, flattened to what the UI actually shows. */
+export type ReportSummary = {
+  id: string;
+  caseNumber: string;
+  subject: string;
+  status: string;
+  reportTypeName: string;
+  createdAt: string;
+};
+
+type JsonApiReport = {
+  id: string;
+  attributes?: {
+    case_number?: string;
+    subject?: string;
+    status?: string;
+    created_at?: string;
+    report_type?: { name?: string };
+  };
+};
+
+function toReportSummary(item: JsonApiReport): ReportSummary {
+  const a = item.attributes ?? {};
+  return {
+    id: item.id,
+    caseNumber: a.case_number ?? "",
+    subject: a.subject ?? "",
+    status: a.status ?? "",
+    reportTypeName: a.report_type?.name ?? "",
+    createdAt: a.created_at ?? "",
+  };
+}
+
 export async function listReports(q?: string, page = 1) {
-  const { data } = await api.get("/reports", { params: { q, page } });
-  return data;
+  const { data } = await api.get<{ data?: JsonApiReport[] }>("/reports", { params: { q, page } });
+  return (data.data ?? []).map(toReportSummary);
 }
 
 export async function viewReportByCaseNumber(caseNumber: string) {
-  const { data } = await api.get(`/reports/${caseNumber}`);
-  return data;
+  const { data } = await api.get<{ data?: JsonApiReport }>(`/reports/${caseNumber}`);
+  return data.data ? toReportSummary(data.data) : null;
 }

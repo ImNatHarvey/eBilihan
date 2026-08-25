@@ -9,14 +9,27 @@ export type StoreLocation = {
   barangayName: string;
 };
 
+/**
+ * Mirrors server/src/store/db.ts. Everything from `egovphUniqid` down to `address` comes
+ * verbatim from the eGov SSO profile and is read-only in eBilihan — eGovPH owns those
+ * fields. `storeName` and `location` are ours, and are empty until onboarding completes.
+ */
 export type StoreOwner = {
   id: string;
   egovphUniqid: string;
   email: string;
   mobile: string;
   fullName: string;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  suffix: string;
+  birthDate: string;
+  gender: string;
+  photo: string;
+  address: string;
   storeName: string;
-  location: StoreLocation;
+  location: StoreLocation | null;
   createdAt: string;
 };
 
@@ -36,6 +49,13 @@ export type Product = {
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * A line in the local cart. `name`/`unitPrice` are carried for display only — the server
+ * re-reads both from the stored product when the order is created, so what is shown here
+ * and what is recorded can never diverge in the client's favour.
+ */
+export type CartLine = OrderItem;
 
 export type OrderItem = {
   productId: string;
@@ -69,13 +89,31 @@ export type Loan = {
   createdAt: string;
 };
 
-export type EgovphProfile = {
-  uniqid: string;
-  email: string;
-  mobile: string;
-  first_name: string;
-  last_name: string;
-  photo?: string;
+/**
+ * Verdict from eVerify, via POST /loans/verify-borrower[/personal].
+ *
+ * A match returns an opaque `verificationId` — the identity itself stays on the server.
+ * `borrowerName` is for display only; sending it back would not create a loan under that
+ * name, because loan creation reads the name from the server-held record.
+ */
+export type BorrowerVerification =
+  | { matched: true; verificationId: string; borrowerName: string }
+  | { matched: false; reason: string };
+
+/**
+ * Server-side decision on a standalone Face Liveness session. The 95.0 threshold is
+ * applied on the server (routes/liveness.ts), not here — a client that only ever sees
+ * `passed` has no raw score left to reinterpret.
+ */
+export type LivenessVerdict = {
+  passed: boolean;
+  status: string;
+  confidenceScore: number;
+  referenceImageUrl?: string;
+  threshold: number;
+  /** Present only on a pass — proof to attach to a high-value loan. */
+  livenessToken?: string;
+  reason?: string;
 };
 
 export type WalletSummary = {

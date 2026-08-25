@@ -1,8 +1,10 @@
 import { Router } from "express";
 import { config } from "../config.js";
 import { ereportClient } from "../lib/httpClients.js";
+import { sendUpstreamError } from "../lib/upstreamError.js";
 import { getCachedToken } from "../lib/tokenCache.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { owners } from "../store/db.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -31,7 +33,7 @@ router.post("/otp/request", async (req, res) => {
     );
     res.json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eReport OTP request failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Sending your verification code");
   }
 });
 
@@ -49,17 +51,27 @@ router.post("/otp/confirm", async (req, res) => {
     reportViewTokens.set(req.ownerId!, reportViewToken);
     res.json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eReport OTP confirm failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Confirming your verification code");
   }
 });
 
+/**
+ * Files a complaint with eReport.
+ *
+ * The complainant's identity is read from the signed-in owner record — which is itself
+ * mirrored from their eGovPH SSO profile and read-only — and never from the request body.
+ * Previously the client supplied name, mobile, email and gender directly, which meant
+ * anyone with a session could file an official complaint under an invented identity
+ * **using our eReport credential**. The client says what happened; the server says who is
+ * saying it.
+ *
+ * `gender` is the one exception, and only as a fallback: eReport requires it, and eGovPH
+ * omits it when the citizen didn't consent to share it.
+ */
 router.post("/", async (req, res) => {
+  const owner = owners.get(req.ownerId!)!;
   const body = req.body as {
-    mobile: string;
-    firstName: string;
-    lastName: string;
-    gender: string;
-    complainantEmail: string;
+    gender?: string;
     reportType: string;
     subject: string;
     message: string;
@@ -71,16 +83,29 @@ router.post("/", async (req, res) => {
     latitude?: string;
     longitude?: string;
   };
+
+  const gender = owner.gender || body.gender;
+  if (!gender) return res.status(422).json({ error: "gender is required" });
+  if (!body.reportType || !body.subject || !body.message) {
+    return res.status(422).json({ error: "reportType, subject, and message are required" });
+  }
+  if (!body.regionCode || !body.provinceCode || !body.municipalityCode || !body.barangayCode) {
+    return res.status(422).json({ error: "A complete incident location is required" });
+  }
+  if (!owner.mobile || !owner.email) {
+    return res.status(422).json({ error: "Your eGovPH account has no mobile number or email on file" });
+  }
+
   try {
     const integrationToken = await getEreportIntegrationToken();
     const response = await ereportClient.post(
       "/api/integration/submit_complaint",
       {
-        mobile: body.mobile,
-        first_name: body.firstName,
-        last_name: body.lastName,
-        gender: body.gender,
-        complainant_email: body.complainantEmail,
+        mobile: owner.mobile,
+        first_name: owner.firstName || owner.fullName,
+        last_name: owner.lastName || owner.fullName,
+        gender,
+        complainant_email: owner.email,
         report_type: body.reportType,
         subject: body.subject,
         message: body.message,
@@ -96,7 +121,7 @@ router.post("/", async (req, res) => {
     );
     res.status(201).json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eReport submit-complaint failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Filing your report");
   }
 });
 
@@ -110,7 +135,7 @@ router.get("/", async (req, res) => {
     });
     res.json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eReport list failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Loading your reports");
   }
 });
 
@@ -137,7 +162,7 @@ router.get("/datasets/regions", async (_req, res) => {
     });
     res.json(unwrapJsonApi(response.data));
   } catch (err) {
-    res.status(502).json({ error: "eReport regions lookup failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Loading regions");
   }
 });
 
@@ -150,7 +175,7 @@ router.get("/datasets/provinces", async (req, res) => {
     });
     res.json(unwrapJsonApi(response.data));
   } catch (err) {
-    res.status(502).json({ error: "eReport provinces lookup failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Loading provinces");
   }
 });
 
@@ -163,7 +188,7 @@ router.get("/datasets/municipalities", async (req, res) => {
     });
     res.json(unwrapJsonApi(response.data));
   } catch (err) {
-    res.status(502).json({ error: "eReport municipalities lookup failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Loading municipalities");
   }
 });
 
@@ -176,7 +201,7 @@ router.get("/datasets/barangays", async (req, res) => {
     });
     res.json(unwrapJsonApi(response.data));
   } catch (err) {
-    res.status(502).json({ error: "eReport barangays lookup failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Loading barangays");
   }
 });
 
@@ -193,7 +218,7 @@ router.get("/datasets/report-types", async (_req, res) => {
     }));
     res.json(types);
   } catch (err) {
-    res.status(502).json({ error: "eReport report-types lookup failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Loading report categories");
   }
 });
 
@@ -206,7 +231,7 @@ router.get("/:caseNumber", async (req, res) => {
     });
     res.json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eReport view-by-case-number failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Loading that report");
   }
 });
 
