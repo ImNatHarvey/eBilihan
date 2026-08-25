@@ -2,6 +2,7 @@ import { Router } from "express";
 import { config } from "../config.js";
 import { everifyClient } from "../lib/httpClients.js";
 import { getCachedToken } from "../lib/tokenCache.js";
+import { sendUpstreamError } from "../lib/upstreamError.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 
 const router = Router();
@@ -37,7 +38,7 @@ router.post("/qr-check", async (req, res) => {
     );
     res.json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eVerify QR check failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Reading the ID QR code");
   }
 });
 
@@ -59,7 +60,7 @@ router.post("/qr-verify", async (req, res) => {
     );
     res.json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eVerify QR verify failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Identity verification");
   }
 });
 
@@ -92,7 +93,7 @@ router.post("/personal", async (req, res) => {
     );
     res.json(response.data);
   } catch (err) {
-    res.status(502).json({ error: "eVerify verify failed", detail: (err as Error).message });
+    sendUpstreamError(res, err, "Identity verification");
   }
 });
 

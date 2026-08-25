@@ -18,16 +18,29 @@ export const config = {
   jwtSecret: process.env.JWT_SECRET || "dev-only-insecure-secret-change-me",
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
 
-  // eGov SSO (eGovPH) — base_url + partner-code + partner-secret,
-  // as shown under "Your API credentials" > "eGov SSO" on the eGOV APIs dashboard.
+  /**
+   * Public origins used to build the redirect/callback URLs handed to eGovPay and Face
+   * Liveness. Both APIs type those fields as `url`, so they must be absolute HTTPS URLs
+   * reachable from the public internet — a custom scheme like `ebilihan://` is not
+   * something those gateways accept, and localhost is unreachable from them.
+   *
+   *  - appBaseUrl    where the *citizen's browser* lands afterwards (the Vercel web app)
+   *  - serverBaseUrl where *the gateway's own server* POSTs status callbacks (this service)
+   */
+  appBaseUrl: process.env.APP_BASE_URL ?? "http://localhost:5173",
+  serverBaseUrl: process.env.SERVER_BASE_URL ?? `http://localhost:${process.env.PORT ?? 4000}`,
+
+  // eGov SSO — base_url + partner_code + partner_secret, issued together on the API
+  // Developer Portal's "eGov SSO > Credentials" tab. partner_code is safe in a browser
+  // (the Login as eGov widget needs it there); partner_secret never is.
   egovph: {
     baseUrl: process.env.EGOVPH_BASE_URL ?? "",
     partnerCode: required("EGOVPH_PARTNER_CODE"),
     partnerSecret: required("EGOVPH_PARTNER_SECRET"),
   },
 
-  // eVerify (NationalID eVerify) — client-id + client-secret + pubkey.
-  // pubkey is used client-side by the eVerify Face Liveness Web SDK.
+  // eVerify (NationalID eVerify) — client_id + client_secret + the Face Liveness Web
+  // SDK's public key (the portal's Variables panel labels this one `public_api_key`).
   everify: {
     baseUrl: process.env.EVERIFY_BASE_URL ?? "",
     clientId: required("EVERIFY_CLIENT_ID"),
@@ -35,18 +48,34 @@ export const config = {
     pubKey: process.env.EVERIFY_PUBKEY ?? "",
   },
 
-  // eMessage — single access-token, sent as X-EMESSAGE-Auth.
+  // eMessage — single access token, sent as X-EMESSAGE-Auth.
   emessage: {
     baseUrl: process.env.EMESSAGE_BASE_URL ?? "",
     apiToken: required("EMESSAGE_API_TOKEN"),
   },
 
-  // eGovPay — api-key (sent as X-eGovPay-Token) + settlement-template-uuid.
-  // Prefix apiKey with "test_" while integrating so no live funds move.
+  // eGovPay — merchant token (sent as X-eGovPay-Token, and doubling as the HMAC signing
+  // key for `digest`) + the settlement template UUID created under eGovPAY > Templates.
+  // Prefix the token with "test_" while integrating so no live funds move.
   egovpay: {
     baseUrl: process.env.EGOVPAY_BASE_URL ?? "",
     apiToken: required("EGOVPAY_API_TOKEN"),
     settlementTemplateUuid: process.env.EGOVPAY_SETTLEMENT_TEMPLATE_UUID ?? "",
+  },
+
+  loans: {
+    /**
+     * Loans at or above this amount (PHP) require the STORE OWNER to pass a standalone
+     * Face Liveness check before the loan is recorded — distinct from the borrower's own
+     * eVerify match, and enforced server-side in routes/loans.ts.
+     *
+     * Typical sari-sari store credit ("pautang") runs ₱50–₱500. ₱1,000 is where a loan
+     * becomes unusual enough to be worth re-confirming that the owner is personally
+     * present, rather than someone else holding an unlocked phone.
+     *
+     * This is eBilihan's own lending policy. No eGov API imposes it.
+     */
+    livenessThresholdPhp: Number(process.env.LOAN_LIVENESS_THRESHOLD_PHP ?? 1000),
   },
 
   // eReport — access_code exchanged for a short-lived integration access_token.
@@ -60,10 +89,11 @@ export const config = {
   faceLiveness: {
     baseUrl: process.env.FACE_LIVENESS_BASE_URL ?? "",
     apiKey: process.env.FACE_LIVENESS_API_KEY ?? "",
+    /**
+     * The product's own documented security threshold: accept a session only when the
+     * status is exactly "SUCCEEDED" AND confidence_score is >= 95.0 (out of 100.0).
+     * Below that, the docs require rejecting the session as high-risk and retrying.
+     */
+    minConfidenceScore: 95,
   },
-
-  // Demo sign-in number standing in for a real eGovPH-linked mobile (see
-  // routes/auth.ts DEMO_EGOVPH_PROFILE). MUST exactly match VITE_DEMO_MOBILE_E164 in
-  // the frontend's .env, or first-time login 404s ("No eBilihan store registered").
-  demoMobileE164: process.env.DEMO_MOBILE_E164 || "+639000000000",
 };

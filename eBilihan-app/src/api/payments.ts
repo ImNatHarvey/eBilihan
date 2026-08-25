@@ -1,14 +1,17 @@
 import { api } from "./client";
 
+/**
+ * Just the order id. Everything else eGovPay needs is derived server-side:
+ *
+ *  - `amount`, `items`, `txnid` come from the stored order, so the sum a customer is asked
+ *    to pay is never a figure this device supplied;
+ *  - `redirect_url` and `callback_url` come from the server's configured public origins —
+ *    the app can't know this backend's externally reachable URL, and eGovPay types both as
+ *    `url`, so a custom app scheme is rejected;
+ *  - `digest` is an HMAC keyed by the merchant token, which never leaves the server.
+ */
 export type GeneratePaymentInput = {
-  amount: number;
-  items: { name: string; amount: number }[];
-  txnid: string;
-  mobile?: string;
-  email?: string;
-  name?: string;
-  redirectUrl: string;
-  callbackUrl: string;
+  orderId: string;
 };
 
 /** eGovPay > Generate Payment (proxied): returns a hosted payment-gateway link for GCash checkout. */

@@ -20,12 +20,24 @@ export type ApiErrorKind =
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly status?: number;
+  /**
+   * The server's raw error body. Some failures carry a flag the UI has to act on rather
+   * than merely display — e.g. `needsOwnerLiveness` on a high-value loan, which tells the
+   * client to offer a face check instead of just repeating the message.
+   */
+  readonly body?: Record<string, unknown>;
 
-  constructor(message: string, kind: ApiErrorKind, status?: number) {
+  constructor(message: string, kind: ApiErrorKind, status?: number, body?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.kind = kind;
     this.status = status;
+    this.body = body;
+  }
+
+  /** True when the server asked for the owner's own Face Liveness check first. */
+  get needsOwnerLiveness(): boolean {
+    return this.body?.needsOwnerLiveness === true;
   }
 }
 
@@ -57,13 +69,39 @@ export function toApiError(error: unknown): ApiError {
 
     const status = error.response.status;
     const serverMessage = extractServerMessage(error.response.data);
-    if (status === 401) return new ApiError(serverMessage ?? "Your session expired — please log in again.", "unauthorized", status);
-    if (status === 403) return new ApiError(serverMessage ?? "You don't have permission to do that.", "forbidden", status);
-    if (status === 404) return new ApiError(serverMessage ?? "That wasn't found.", "not_found", status);
-    if (status === 400 || status === 422) return new ApiError(serverMessage ?? "Please check the details you entered.", "validation", status);
-    if (status >= 500) return new ApiError(serverMessage ?? "Something went wrong on the server. Please try again shortly.", "server", status);
-    return new ApiError(serverMessage ?? error.message, "unknown", status);
+    const body =
+      error.response.data && typeof error.response.data === "object"
+        ? (error.response.data as Record<string, unknown>)
+        : undefined;
+    if (status === 401) return new ApiError(serverMessage ?? "Your session expired — please log in again.", "unauthorized", status, body);
+    if (status === 403) return new ApiError(serverMessage ?? "You don't have permission to do that.", "forbidden", status, body);
+    if (status === 404) return new ApiError(serverMessage ?? "That wasn't found.", "not_found", status, body);
+    if (status === 429) {
+      // Account-level and shared across all six eGov APIs — surfaced distinctly so it
+      // reads as "top up credits", not as a bug in whatever call happened to hit it.
+      return new ApiError(serverMessage ?? "The eGov API quota is exhausted.", "server", status, body);
+    }
+    if (status === 400 || status === 422) return new ApiError(serverMessage ?? "Please check the details you entered.", "validation", status, body);
+    if (status >= 500) return new ApiError(serverMessage ?? "Something went wrong on the server. Please try again shortly.", "server", status, body);
+    return new ApiError(serverMessage ?? error.message, "unknown", status, body);
   }
 
   return new ApiError(error instanceof Error ? error.message : String(error), "unknown");
+}
+
+/**
+ * Message ready to put straight in front of a store owner. Third-party SDKs (eGovPH's
+ * login widget, eVerify's liveness SDK) reject with plain objects rather than Errors, so
+ * `err.message` alone is not enough at those call sites — this falls back cleanly.
+ */
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === "object") {
+    const message = extractServerMessage(error);
+    if (message) return message;
+    const status = (error as { status?: unknown }).status;
+    if (typeof status === "string" && status) return `${fallback} (${status.toLowerCase()})`;
+  }
+  return fallback;
 }
