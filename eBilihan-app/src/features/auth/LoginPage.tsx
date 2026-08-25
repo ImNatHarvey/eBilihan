@@ -1,167 +1,82 @@
-import { useState } from "react";
-import { Browser } from "@capacitor/browser";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Fingerprint, CheckCircle2, Loader2 } from "lucide-react";
+import { Fingerprint, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { OtpInput } from "@/components/ui/otp-input";
-import { LocationPicker } from "@/components/shared/LocationPicker";
-import { registerStart, registerConfirm, loginOtpStart, loginOtpConfirm, fetchEgovphDemoProfile } from "@/api/auth";
+import { getSsoWidgetConfig, ssoLogin } from "@/api/auth";
+import { renderEgovLogin } from "@/lib/egovLoginWidget";
 import { useAuthStore } from "@/store/authStore";
-import { maskMobile } from "@/lib/demoIdentity";
-import { normalizePhMobile } from "@/lib/phone";
+import { getApiErrorMessage } from "@/lib/apiError";
 import logo from "@/assets/eBilihan-Logo.png";
-import type { EgovphProfile, StoreLocation } from "@/types";
-
-type LoginStep = "start" | "mobile" | "otp";
-type RegisterStep = "start" | "details" | "otp";
 
 /**
- * eGovPH SSO login/registration. The exact authorize/redirect URL that hands back an
- * exchange_code was never present in the reviewed reference docs (see CLAUDE.md), so
- * both flows go through a stand-in instead of a real SSO round-trip: "Login via eGovPH
- * SSO" now prompts for any mobile number and auto-provisions a store for it on first
- * OTP verification, while "Continue with eGovPH" (registration) still uses the fixed
- * demo profile (GET /auth/egovph/demo-profile). The real-SSO code path (Browser.open)
- * is left in place and takes over automatically once VITE_EGOVPH_AUTHORIZE_URL is set.
+ * The only sign-in surface eBilihan has, and deliberately the whole of it.
+ *
+ * eGovPH's partner requirements are explicit that an integrated service must not run its
+ * own login, registration, or profile/password screens — sessions and profile data are
+ * eGovPH's. So there is no mobile-number field, no OTP boxes, and no "register" tab here
+ * any more: the citizen authenticates inside eGovPH's own widget (mobile/email → OTP →
+ * eGov PIN), which hands back a single-use `exchange_code`. Our backend redeems it.
+ *
+ * The other way in is eGovPH launching us directly at /egovph/sso?exchange_code=... —
+ * see SsoCallbackPage. Both converge on the same POST /auth/sso/login.
  */
 export function LoginPage() {
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
-  const [mode, setMode] = useState<"login" | "register">("login");
-
-  // --- login (user-entered mobile number + eMessage OTP) ---
-  const [loginStep, setLoginStep] = useState<LoginStep>("start");
-  const [mobile, setMobile] = useState("");
-  const [loginOtp, setLoginOtp] = useState("");
-
-  // --- register (demo eGovPH profile fetch + Location + eMessage OTP) ---
-  const [registerStep, setRegisterStep] = useState<RegisterStep>("start");
-  const [profile, setProfile] = useState<EgovphProfile | null>(null);
-  const [storeName, setStoreName] = useState("");
-  const [location, setLocation] = useState<StoreLocation | null>(null);
-  const [registerOtp, setRegisterOtp] = useState("");
-  const [pendingRegistration, setPendingRegistration] = useState<Awaited<ReturnType<typeof registerStart>>["pendingRegistration"] | null>(null);
-
+  const mountRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isFetchingProfile, setIsFetchingProfile] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(true);
+  const [isSigningIn, setIsSigningIn] = useState(false);
 
-  async function handleLoginSubmit() {
-    setError(null);
-    const authorizeUrl = import.meta.env.VITE_EGOVPH_AUTHORIZE_URL;
-    if (authorizeUrl) {
-      setIsLoading(true);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function mountWidget() {
       try {
-        // Real eGovPH SSO redirect flow, once configured. Returning here still needs a
-        // deep-link listener to capture exchange_code and call ssoLogin() — not built yet.
-        await Browser.open({ url: authorizeUrl });
+        const { partnerCode, host, partnerName } = await getSsoWidgetConfig();
+        if (cancelled) return;
+        if (!partnerCode || !host) {
+          setError("eGovPH sign-in isn't configured on the server yet.");
+          return;
+        }
+
+        await renderEgovLogin({
+          target: "#egov-login",
+          partnerCode,
+          host,
+          partnerName: partnerName ?? "eBilihan",
+          onSuccess: async ({ exchangeCode }) => {
+            setError(null);
+            setIsSigningIn(true);
+            try {
+              // Single-use and short-lived — redeem it immediately.
+              const { token, owner, needsOnboarding } = await ssoLogin(exchangeCode);
+              await login(token, owner, needsOnboarding);
+              navigate(needsOnboarding ? "/onboarding" : "/", { replace: true });
+            } catch (err) {
+              setError(getApiErrorMessage(err, "Could not complete eGovPH sign-in"));
+            } finally {
+              setIsSigningIn(false);
+            }
+          },
+          onError: (err) => {
+            setError(getApiErrorMessage(err, "eGovPH sign-in was cancelled or failed"));
+          },
+        });
+      } catch (err) {
+        if (!cancelled) setError(getApiErrorMessage(err, "Could not load eGovPH sign-in"));
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsPreparing(false);
       }
-      return;
     }
-    setLoginStep("mobile");
-  }
 
-  async function handleSendOtp() {
-    setError(null);
-    const normalized = normalizePhMobile(mobile);
-    if (!normalized) {
-      setError("Enter a valid PH mobile number (e.g. 09171234567)");
-      return;
-    }
-    setIsLoading(true);
-    try {
-      await loginOtpStart(normalized);
-      setMobile(normalized);
-      setLoginStep("otp");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not send login code");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleLoginOtpConfirm() {
-    setError(null);
-    setIsLoading(true);
-    try {
-      const { token, owner } = await loginOtpConfirm(mobile, loginOtp);
-      await login(token, owner);
-      navigate("/");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid code");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleContinueWithEgovph() {
-    setError(null);
-    setIsFetchingProfile(true);
-    try {
-      // Small artificial delay so "Fetching your eGovPH details..." reads as a real fetch.
-      const [fetchedProfile] = await Promise.all([
-        fetchEgovphDemoProfile(),
-        new Promise((resolve) => setTimeout(resolve, 900)),
-      ]);
-      setProfile(fetchedProfile);
-      setRegisterStep("details");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not fetch eGovPH details");
-    } finally {
-      setIsFetchingProfile(false);
-    }
-  }
-
-  async function handleCompleteAndSendOtp() {
-    if (!profile || !storeName || !location) return;
-    setError(null);
-    setIsLoading(true);
-    try {
-      const { pendingRegistration: pending } = await registerStart(profile, storeName, location);
-      setPendingRegistration(pending);
-      setRegisterStep("otp");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start registration");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleRegisterConfirm() {
-    if (!pendingRegistration) return;
-    setError(null);
-    setIsLoading(true);
-    try {
-      const { token, owner } = await registerConfirm(
-        pendingRegistration.profile,
-        pendingRegistration.storeName,
-        pendingRegistration.location,
-        registerOtp,
-      );
-      await login(token, owner);
-      navigate("/");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "OTP verification failed");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  function switchMode() {
-    setMode(mode === "login" ? "register" : "login");
-    setError(null);
-    setLoginStep("start");
-    setMobile("");
-    setRegisterStep("start");
-    setProfile(null);
-    setPendingRegistration(null);
-  }
+    mountWidget();
+    return () => {
+      cancelled = true;
+    };
+  }, [login, navigate]);
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-6 bg-brand-surface p-6">
@@ -170,119 +85,34 @@ export function LoginPage() {
 
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>{mode === "login" ? "Sign in" : "Register your store"}</CardTitle>
-          <CardDescription>Sign in with the eGovPH account you already use for other government services.</CardDescription>
+          <CardTitle>Sign in</CardTitle>
+          <CardDescription>
+            Sign in with the eGovPH account you already use for other government services.
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          {mode === "login" && loginStep === "start" && (
+          {isSigningIn ? (
+            <Button size="lg" disabled>
+              <Loader2 className="animate-spin" /> Signing you in...
+            </Button>
+          ) : (
             <>
-              <p className="text-sm text-brand-ink/60">
-                We&apos;ll send a one-time code to your eGovPH-linked mobile number.
-              </p>
-              {error && <Badge variant="danger">{error}</Badge>}
-              <Button size="lg" onClick={handleLoginSubmit} disabled={isLoading}>
-                <Fingerprint /> Login via eGovPH SSO
-              </Button>
+              {isPreparing && (
+                <Button size="lg" disabled>
+                  <Loader2 className="animate-spin" /> Loading eGovPH sign-in...
+                </Button>
+              )}
+              {/* eGovPH's own widget renders here — mobile/email, OTP, then eGov PIN. */}
+              <div id="egov-login" ref={mountRef} />
             </>
           )}
 
-          {mode === "login" && loginStep === "mobile" && (
-            <>
-              <div>
-                <Label htmlFor="loginMobile">Mobile Number</Label>
-                <Input
-                  id="loginMobile"
-                  inputMode="tel"
-                  autoFocus
-                  value={mobile}
-                  onChange={(e) => setMobile(e.target.value)}
-                  placeholder="09171234567"
-                />
-              </div>
-              {error && <Badge variant="danger">{error}</Badge>}
-              <Button size="lg" onClick={handleSendOtp} disabled={!mobile || isLoading}>
-                Send OTP
-              </Button>
-              <Button variant="link" onClick={() => { setLoginStep("start"); setError(null); }}>
-                Back
-              </Button>
-            </>
-          )}
+          {error && <Badge variant="danger">{error}</Badge>}
 
-          {mode === "login" && loginStep === "otp" && (
-            <>
-              <Label>Enter the 6-digit code sent to {maskMobile(mobile)}</Label>
-              <OtpInput value={loginOtp} onChange={setLoginOtp} />
-              {error && <Badge variant="danger">{error}</Badge>}
-              <Button size="lg" onClick={handleLoginOtpConfirm} disabled={loginOtp.length !== 6 || isLoading}>
-                Verify &amp; Sign In
-              </Button>
-              <Button variant="link" onClick={() => { setLoginStep("mobile"); setError(null); }}>
-                Back
-              </Button>
-            </>
-          )}
-
-          {mode === "register" && registerStep === "start" && (
-            <>
-              {error && <Badge variant="danger">{error}</Badge>}
-              <Button size="lg" onClick={handleContinueWithEgovph} disabled={isFetchingProfile}>
-                {isFetchingProfile ? <Loader2 className="animate-spin" /> : <Fingerprint />}
-                {isFetchingProfile ? "Fetching your eGovPH details..." : "Continue with eGovPH"}
-              </Button>
-            </>
-          )}
-
-          {mode === "register" && registerStep === "details" && profile && (
-            <>
-              <div className="flex items-center gap-2 rounded-lg bg-brand-gold-light px-3 py-2 text-green-700">
-                <CheckCircle2 className="h-5 w-5 shrink-0" />
-                <span className="text-sm font-medium">eGovPH Identity Verified</span>
-              </div>
-
-              <div>
-                <Label>Verified Name</Label>
-                <p className="rounded-lg border border-brand-ink/10 bg-brand-surface px-3 py-2 text-sm font-medium">
-                  {profile.first_name} {profile.last_name}
-                </p>
-              </div>
-              <div>
-                <Label>Email Address</Label>
-                <p className="rounded-lg border border-brand-ink/10 bg-brand-surface px-3 py-2 text-sm">{profile.email}</p>
-              </div>
-
-              <div>
-                <Label htmlFor="storeName">Store Name</Label>
-                <Input id="storeName" value={storeName} onChange={(e) => setStoreName(e.target.value)} placeholder="Aling Nena's Sari-Sari Store" />
-              </div>
-
-              <div>
-                <Label>Location</Label>
-                <LocationPicker value={location} onChange={setLocation} />
-              </div>
-
-              {error && <Badge variant="danger">{error}</Badge>}
-
-              <Button size="lg" onClick={handleCompleteAndSendOtp} disabled={!storeName || !location || isLoading}>
-                Complete &amp; Send OTP
-              </Button>
-            </>
-          )}
-
-          {mode === "register" && registerStep === "otp" && pendingRegistration && (
-            <>
-              <Label>Enter the 6-digit code sent to {maskMobile(pendingRegistration.profile.mobile)}</Label>
-              <OtpInput value={registerOtp} onChange={setRegisterOtp} />
-              {error && <Badge variant="danger">{error}</Badge>}
-              <Button size="lg" onClick={handleRegisterConfirm} disabled={registerOtp.length !== 6 || isLoading}>
-                Confirm OTP &amp; Create Store
-              </Button>
-            </>
-          )}
-
-          <Button variant="link" onClick={switchMode}>
-            {mode === "login" ? "New store? Register here" : "Already registered? Sign in"}
-          </Button>
+          <p className="flex items-center gap-2 text-xs text-brand-ink/50">
+            <Fingerprint className="h-4 w-4 shrink-0" />
+            Your name, address and contact details stay managed in eGovPH.
+          </p>
         </CardContent>
       </Card>
     </div>

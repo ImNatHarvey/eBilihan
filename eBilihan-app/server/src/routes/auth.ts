@@ -1,68 +1,48 @@
 import { Router } from "express";
-import { customAlphabet } from "nanoid";
 import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { egovphClient } from "../lib/httpClients.js";
 import { issueSessionToken } from "../lib/session.js";
-import { sendSms } from "../lib/emessage.js";
-import { owners, pendingOtps, seedDemoProducts, type StoreLocation, type StoreOwner } from "../store/db.js";
+import { owners, seedDemoProducts, type StoreLocation, type StoreOwner } from "../store/db.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 
 const router = Router();
-const generateOtp = customAlphabet("0123456789", 6);
-const PH_MOBILE_RE = /^\+639\d{9}$/;
 
-type EgovphProfile = {
+/**
+ * The citizen profile eGov SSO returns from POST /api/partner/sso_authentication.
+ * Which fields are actually populated depends on what the citizen consented to share,
+ * so everything except `uniqid` is treated as optional here.
+ */
+export type EgovphProfile = {
   uniqid: string;
-  email: string;
-  mobile: string;
-  first_name: string;
-  last_name: string;
+  email?: string;
+  mobile?: string;
+  first_name?: string;
+  middle_name?: string;
+  last_name?: string;
+  suffix?: string | null;
+  birth_date?: string;
+  gender?: string;
+  nationality?: string;
+  photo?: string;
+  address?: string;
+  street?: string;
+  barangay?: string;
 };
 
 /**
- * Hardcoded demo identity standing in for a real eGovPH SSO profile fetch. This exists
- * because eGovPH's authorize/redirect URL (the thing that would hand back a real
- * exchange_code) was never available in the reviewed reference docs — see CLAUDE.md.
- * GET /egovph/demo-profile below returns exactly this, and both "Login via eGovPH SSO"
- * and "Continue with eGovPH" (registration) use it in place of a real SSO round-trip.
- * Replace this whole block — and switch the routes below back to resolveEgovphProfile —
- * once EGOVPH_AUTHORIZE_URL is confirmed and a deep-link callback is wired up.
- */
-const DEMO_EGOVPH_PROFILE: EgovphProfile = {
-  uniqid: "DEMO-EGOVPH-0001",
-  first_name: "JOSH HARVEY",
-  last_name: "CRISOLOGO",
-  email: "redacted@example.com",
-  mobile: config.demoMobileE164,
-};
-
-/**
- * Placeholder used only when /login/otp/confirm auto-provisions the demo store (see
- * below) — there's no in-memory database, so every backend restart wipes `owners`, and
- * making every fresh login require a full Register-first round-trip was pure friction
- * for a single-demo-identity setup. Real registration (with a real Store Name + PSGC
- * Location) still overwrites this the moment someone actually runs it.
- */
-const DEMO_DEFAULT_STORE_NAME = "My Sari-Sari Store";
-const DEMO_DEFAULT_LOCATION: StoreLocation = {
-  regionCode: "",
-  regionName: "Not set yet",
-  provinceCode: "",
-  provinceName: "",
-  cityCode: "",
-  cityName: "",
-  barangayCode: "",
-  barangayName: "",
-};
-
-/**
- * Exchanges an eGovPH SSO exchange_code for an access_token, then resolves the
- * authenticated citizen's profile. Mirrors eGOV APIs > eGovPH > "Generates Access
- * Token" (POST /api/token) followed by "SSO Authentication" (POST /api/partner/sso_authentication).
+ * eGov SSO, both calls, exactly as documented:
  *
- * Not currently called by any route below (see DEMO_EGOVPH_PROFILE) — kept ready for
- * when EGOVPH_AUTHORIZE_URL is known, at which point /sso/login becomes reachable again.
+ *   1. POST {base}/api/token
+ *        { exchange_code, scope: "SSO_AUTHENTICATION", partner_code, partner_secret }
+ *        -> { access_token }   (issued by the gateway, valid 1 hour, free of charge)
+ *   2. POST {base}/api/partner/sso_authentication
+ *        Authorization: Bearer <access_token>, body {}
+ *        -> { status, message, data: { uniqid, first_name, ... } }   (1 credit)
+ *
+ * The exchange_code is single-use and short-lived — redeem it immediately. It arrives
+ * either from eGovPH opening our own SSO base URL with ?exchange_code=... appended, or
+ * from the Login as eGov widget's onSuccess callback. Both funnel into POST /sso/login.
  */
 async function resolveEgovphProfile(exchangeCode: string): Promise<EgovphProfile> {
   const tokenRes = await egovphClient.post("/api/token", {
@@ -72,6 +52,7 @@ async function resolveEgovphProfile(exchangeCode: string): Promise<EgovphProfile
     partner_secret: config.egovph.partnerSecret,
   });
   const accessToken = tokenRes.data.access_token as string;
+  if (!accessToken) throw new Error("eGov SSO returned no access_token");
 
   const profileRes = await egovphClient.post(
     "/api/partner/sso_authentication",
@@ -81,17 +62,144 @@ async function resolveEgovphProfile(exchangeCode: string): Promise<EgovphProfile
   return profileRes.data.data as EgovphProfile;
 }
 
-function findOwnerByUniqid(uniqid: string): StoreOwner | undefined {
-  return [...owners.values()].find((o) => o.egovphUniqid === uniqid);
+function fullNameOf(profile: EgovphProfile): string {
+  return [profile.first_name, profile.middle_name, profile.last_name, profile.suffix]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 }
 
-function findOwnerByMobile(mobile: string): StoreOwner | undefined {
-  return [...owners.values()].find((o) => o.mobile === mobile);
+/**
+ * eGovPH's integration requirement: match existing users by `uniqid`, falling back to
+ * personal details (name + birthdate), then bind the uniqid so future logins go
+ * straight through. New citizens are registered automatically from the profile.
+ */
+function findOwnerForProfile(profile: EgovphProfile): StoreOwner | undefined {
+  const all = [...owners.values()];
+
+  const byUniqid = all.find((o) => o.egovphUniqid === profile.uniqid);
+  if (byUniqid) return byUniqid;
+
+  const fullName = fullNameOf(profile).toLowerCase();
+  if (!fullName || !profile.birth_date) return undefined;
+  const byDetails = all.find(
+    (o) => o.fullName.toLowerCase() === fullName && o.birthDate === profile.birth_date,
+  );
+  if (byDetails) {
+    // Bind the uniqid so the next sign-in matches on the fast path above.
+    byDetails.egovphUniqid = profile.uniqid;
+    owners.set(byDetails.id, byDetails);
+  }
+  return byDetails;
 }
 
-/** Powers both "Login via eGovPH SSO" and registration's "Continue with eGovPH" button. */
-router.get("/egovph/demo-profile", (_req, res) => {
-  res.json({ profile: DEMO_EGOVPH_PROFILE });
+/** A brand-new citizen: register them from the SSO profile alone. */
+function registerOwnerFromProfile(profile: EgovphProfile): StoreOwner {
+  const owner: StoreOwner = {
+    id: randomUUID(),
+    egovphUniqid: profile.uniqid,
+    email: profile.email ?? "",
+    mobile: profile.mobile ?? "",
+    fullName: fullNameOf(profile),
+    firstName: profile.first_name ?? "",
+    middleName: profile.middle_name ?? "",
+    lastName: profile.last_name ?? "",
+    suffix: profile.suffix ?? "",
+    birthDate: profile.birth_date ?? "",
+    gender: profile.gender ?? "",
+    photo: profile.photo ?? "",
+    address: profile.address ?? "",
+    // Store name and location are eBilihan's own data, not eGovPH's — collected once on
+    // the onboarding screen straight after this first sign-in. Empty storeName is the
+    // flag the client reads as `needsOnboarding`.
+    storeName: "",
+    location: null,
+    createdAt: new Date().toISOString(),
+  };
+  owners.set(owner.id, owner);
+  seedDemoProducts(owner.id);
+  return owner;
+}
+
+/** Owners created before this field existed still have to pass through onboarding. */
+function needsOnboarding(owner: StoreOwner): boolean {
+  return !owner.storeName || !owner.location;
+}
+
+/**
+ * Login as eGov / Quick start both end here. The client hands over the single-use
+ * exchange_code; we redeem it, match-or-register the citizen, and issue an eBilihan
+ * session JWT. There is no login screen, no password, and no OTP on our side —
+ * the citizen arrives already authenticated by eGovPH.
+ */
+router.post("/sso/login", async (req, res) => {
+  const { exchangeCode } = req.body as { exchangeCode?: string };
+  if (!exchangeCode) return res.status(422).json({ error: "exchangeCode is required" });
+
+  let profile: EgovphProfile;
+  try {
+    profile = await resolveEgovphProfile(exchangeCode);
+  } catch (err) {
+    // Pass the gateway's own status through where we can — 403 (bad/revoked partner
+    // credentials), 422 (expired or already-used exchange_code) and 429 (no credits
+    // remaining) all mean very different things to whoever is debugging the demo.
+    const status = (err as { response?: { status?: number } }).response?.status;
+    const upstream = (err as { response?: { data?: unknown } }).response?.data;
+    if (status === 403) {
+      return res.status(403).json({ error: "eGov SSO rejected our partner credentials", detail: upstream });
+    }
+    if (status === 422) {
+      return res.status(422).json({ error: "This eGovPH sign-in link has expired — please sign in again", detail: upstream });
+    }
+    if (status === 429) {
+      return res.status(429).json({ error: "eGov API quota exhausted — ask an administrator for a top-up", detail: upstream });
+    }
+    return res.status(502).json({ error: "eGov SSO exchange failed", detail: (err as Error).message });
+  }
+
+  if (!profile?.uniqid) {
+    return res.status(502).json({ error: "eGov SSO returned a profile with no uniqid" });
+  }
+
+  const owner = findOwnerForProfile(profile) ?? registerOwnerFromProfile(profile);
+  const token = issueSessionToken({ ownerId: owner.id });
+  res.json({ token, owner, needsOnboarding: needsOnboarding(owner) });
+});
+
+/**
+ * Probe for the Login as eGov widget: confirms our partner_code is known and approved
+ * before the client bothers rendering the widget. Documented never to error — a bad or
+ * revoked code simply answers `is_code_valid: 0`. Free of charge.
+ */
+router.get("/sso/health", async (_req, res) => {
+  if (!config.egovph.baseUrl || !config.egovph.partnerCode) {
+    return res.json({ ok: false, reason: "eGov SSO is not configured on this server yet" });
+  }
+  try {
+    const response = await egovphClient.post("/api/partner/check_access", {
+      partner_code: config.egovph.partnerCode,
+    });
+    const ok = response.data?.is_code_valid === 1;
+    res.json({ ok, reason: ok ? undefined : "Partner code is unknown, revoked, or the account is unapproved" });
+  } catch (err) {
+    res.json({ ok: false, reason: (err as Error).message });
+  }
+});
+
+/**
+ * The two public values the Login as eGov widget needs in the browser: our partner_code
+ * and our gateway base URL. The integration guide is explicit that partner_code is
+ * "safe to expose in a browser" and that `host` is the widget's own base URL option —
+ * the partner_secret and every access_token stay on this server. Serving them from here
+ * rather than baking them into the bundle keeps a rotated credential a server-side
+ * change, with no app rebuild.
+ */
+router.get("/sso/widget-config", (_req, res) => {
+  res.json({
+    partnerCode: config.egovph.partnerCode,
+    host: config.egovph.baseUrl,
+    partnerName: "eBilihan",
+  });
 });
 
 /**
@@ -102,148 +210,32 @@ router.get("/egovph/demo-profile", (_req, res) => {
  * clears the stale token and bounces to /login the moment this fails.
  */
 router.get("/me", requireAuth, (req, res) => {
-  res.json({ owner: owners.get(req.ownerId!) });
-});
-
-/** Existing eBilihan store owners: log in with an already-linked eGovPH account (real SSO — currently unreachable from the UI, see above). */
-router.post("/sso/login", async (req, res) => {
-  const { exchangeCode } = req.body as { exchangeCode?: string };
-  if (!exchangeCode) return res.status(422).json({ error: "exchangeCode is required" });
-
-  try {
-    const profile = await resolveEgovphProfile(exchangeCode);
-    const owner = findOwnerByUniqid(profile.uniqid);
-    if (!owner) {
-      return res.status(404).json({ error: "No eBilihan store linked to this eGovPH account yet", profile });
-    }
-    const token = issueSessionToken({ ownerId: owner.id });
-    res.json({ token, owner });
-  } catch (err) {
-    res.status(502).json({ error: "eGovPH SSO exchange failed", detail: (err as Error).message });
-  }
+  const owner = owners.get(req.ownerId!)!;
+  res.json({ owner, needsOnboarding: needsOnboarding(owner) });
 });
 
 /**
- * Mobile-number + eMessage OTP login: a stand-in for real eGovPH SSO login while
- * EGOVPH_AUTHORIZE_URL is unknown (see CLAUDE.md). Sends the code regardless of
- * whether a store already exists for this number — /login/otp/confirm below decides
- * whether that means "log in" or "auto-provision a new store".
+ * Onboarding: the only two things eGovPH cannot give us. Everything identifying the
+ * citizen (name, birthdate, address, email, mobile) comes from the SSO profile and is
+ * deliberately not editable here — per eGovPH's requirements, profile updates happen
+ * in eGovPH, not on the partner site.
  */
-router.post("/login/otp/start", async (req, res) => {
-  const { mobile } = req.body as { mobile?: string };
-  if (!mobile || !PH_MOBILE_RE.test(mobile)) {
-    return res.status(422).json({ error: "Enter a valid PH mobile number" });
+router.post("/onboarding", requireAuth, (req, res) => {
+  const { storeName, location } = req.body as { storeName?: string; location?: StoreLocation };
+  const trimmed = storeName?.trim();
+  if (!trimmed || trimmed.length < 2 || trimmed.length > 60) {
+    return res.status(422).json({ error: "Store name must be between 2 and 60 characters" });
+  }
+  if (!location?.regionCode || !location.provinceCode || !location.cityCode || !location.barangayCode) {
+    return res.status(422).json({ error: "Complete the full location (region, province, city, barangay)" });
   }
 
-  const otp = generateOtp();
-  pendingOtps.set(mobile, { otp, expiresAtMs: Date.now() + 5 * 60_000 });
-  try {
-    await sendSms(mobile, `Your eBilihan login code is ${otp}. It expires in 5 minutes.`);
-    res.json({ message: `OTP sent to ${mobile}` });
-  } catch (err) {
-    res.status(502).json({ error: "Could not send OTP via eMessage", detail: (err as Error).message });
-  }
-});
-
-router.post("/login/otp/confirm", async (req, res) => {
-  const { mobile, otp } = req.body as { mobile?: string; otp?: string };
-  if (!mobile || !otp) return res.status(422).json({ error: "mobile and otp are required" });
-
-  const pending = pendingOtps.get(mobile);
-  if (!pending || pending.otp !== otp || pending.expiresAtMs < Date.now()) {
-    return res.status(422).json({ error: "Invalid or expired OTP" });
-  }
-  pendingOtps.delete(mobile);
-
-  let owner = findOwnerByMobile(mobile);
-  if (!owner) {
-    // Any mobile number that verifies its OTP for the first time auto-provisions a
-    // brand-new store here — there's no real eGovPH SSO yet to source a real name/
-    // profile from, so placeholder identity/store fields stand in until the owner
-    // edits them (or until real SSO replaces this whole stand-in, see CLAUDE.md).
-    owner = {
-      id: randomUUID(),
-      egovphUniqid: `DEMO-${randomUUID()}`,
-      email: `${mobile.replace(/\D/g, "")}@ebilihan.demo`,
-      mobile,
-      fullName: "New Store Owner",
-      storeName: DEMO_DEFAULT_STORE_NAME,
-      location: DEMO_DEFAULT_LOCATION,
-      createdAt: new Date().toISOString(),
-    };
-    owners.set(owner.id, owner);
-    seedDemoProducts(owner.id);
-  }
-
-  const token = issueSessionToken({ ownerId: owner.id });
-  res.json({ token, owner });
-});
-
-/**
- * Step 1 of registration: the frontend has already fetched `profile` from
- * GET /egovph/demo-profile (or, once real SSO exists, resolved it there) — this just
- * validates it isn't already linked, then sends an OTP via eMessage to prove the person
- * completing eBilihan setup on this device controls that number.
- */
-router.post("/register/start", async (req, res) => {
-  const { profile, storeName, location } = req.body as {
-    profile?: EgovphProfile;
-    storeName?: string;
-    location?: StoreLocation;
-  };
-  if (!profile || !storeName || !location) {
-    return res.status(422).json({ error: "profile, storeName, and location are required" });
-  }
-  if (findOwnerByUniqid(profile.uniqid)) {
-    return res.status(409).json({ error: "This eGovPH account is already linked to an eBilihan store" });
-  }
-
-  const otp = generateOtp();
-  pendingOtps.set(profile.mobile, { otp, expiresAtMs: Date.now() + 5 * 60_000 });
-  try {
-    await sendSms(profile.mobile, `Your eBilihan verification code is ${otp}. It expires in 5 minutes.`);
-    res.json({
-      message: `OTP sent to ${profile.mobile}`,
-      pendingRegistration: { profile, storeName, location },
-    });
-  } catch (err) {
-    res.status(502).json({ error: "Could not send OTP via eMessage", detail: (err as Error).message });
-  }
-});
-
-/** Step 2 of registration: confirm the OTP and create the local store-owner record. */
-router.post("/register/confirm", async (req, res) => {
-  const { profile, storeName, location, otp } = req.body as {
-    profile?: EgovphProfile;
-    storeName?: string;
-    location?: StoreLocation;
-    otp?: string;
-  };
-  if (!profile || !storeName || !location || !otp) {
-    return res.status(422).json({ error: "profile, storeName, location, and otp are required" });
-  }
-
-  const pending = pendingOtps.get(profile.mobile);
-  if (!pending || pending.otp !== otp || pending.expiresAtMs < Date.now()) {
-    return res.status(422).json({ error: "Invalid or expired OTP" });
-  }
-  pendingOtps.delete(profile.mobile);
-
-  const owner: StoreOwner = {
-    id: randomUUID(),
-    egovphUniqid: profile.uniqid,
-    email: profile.email,
-    mobile: profile.mobile,
-    fullName: `${profile.first_name} ${profile.last_name}`.trim(),
-    storeName,
-    location,
-    createdAt: new Date().toISOString(),
-  };
+  const owner = owners.get(req.ownerId!)!;
+  owner.storeName = trimmed;
+  owner.location = location;
   owners.set(owner.id, owner);
-  seedDemoProducts(owner.id);
 
-  const token = issueSessionToken({ ownerId: owner.id });
-  res.status(201).json({ token, owner });
+  res.json({ owner, needsOnboarding: false });
 });
 
 export default router;

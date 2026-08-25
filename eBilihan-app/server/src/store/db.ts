@@ -9,7 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-/** PSGC-coded location, captured during registration via the Location picker (routes/locations.ts). */
+/** PSGC-coded location, captured on the onboarding screen via the Location picker (routes/locations.ts). */
 export type StoreLocation = {
   regionCode: string;
   regionName: string;
@@ -21,14 +21,34 @@ export type StoreLocation = {
   barangayName: string;
 };
 
+/**
+ * Everything from `egovphUniqid` down to `address` is mirrored verbatim from the eGov
+ * SSO profile (POST /api/partner/sso_authentication) and is read-only in eBilihan —
+ * eGovPH owns those fields and is the only place a citizen may change them.
+ *
+ * Keeping the name parts split (rather than only `fullName`) is deliberate: eReport's
+ * submit_complaint requires `first_name`, `last_name` and `gender` as separate required
+ * fields, and splitting a display name on whitespace to recover them is guesswork that
+ * breaks on middle names and suffixes. SSO hands us all of them properly separated.
+ *
+ * `storeName` and `location` are eBilihan's own — empty until onboarding completes.
+ */
 export type StoreOwner = {
   id: string;
   egovphUniqid: string;
   email: string;
   mobile: string;
   fullName: string;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  suffix: string;
+  birthDate: string;
+  gender: string;
+  photo: string;
+  address: string;
   storeName: string;
-  location: StoreLocation;
+  location: StoreLocation | null;
   createdAt: string;
 };
 
@@ -86,16 +106,72 @@ export const orders = new Map<string, Order>();
 export const loans = new Map<string, Loan>();
 
 /**
- * mobile -> { otp, expiresAtMs }, used for BOTH the registration OTP flow and the
- * mobile-number + eMessage login flow (see routes/auth.ts) — same shape, same purpose
- * ("prove control of this mobile number"), just triggered from two different screens.
+ * mobile -> { otp, expiresAtMs }. Sign-in no longer uses this — eGovPH owns
+ * authentication now and runs its own OTP + PIN screens (routes/auth.ts). What remains
+ * is the loan-confirmation OTP in routes/loans.ts: a deliberate second factor before
+ * money is recorded against a borrower's verified identity, which is eBilihan's own
+ * business rule rather than an identity check, and so is ours to run.
  */
 export const pendingOtps = new Map<string, { otp: string; expiresAtMs: number }>();
 
 /**
+ * A borrower identity that eVerify actually matched, held server-side between the
+ * verification call and loan creation.
+ *
+ * This exists because the identity gate has to live somewhere the client cannot reach.
+ * Previously the verified name was returned to the browser and posted back with the loan,
+ * which meant the whole eVerify check was advisory: anyone could POST a loan naming
+ * whoever they liked and the server would write it down. Now `/loans/verify-borrower`
+ * returns only an opaque `verificationId`, and loan creation reads the borrower's
+ * identity from here — so a borrower's name on a loan can only have come from a real
+ * PhilSys match made by that same owner, minutes earlier.
+ *
+ * Short-lived on purpose: a verification is evidence that someone stood in front of a
+ * camera just now, and that claim goes stale.
+ */
+export type VerifiedBorrower = {
+  ownerId: string;
+  borrowerName: string;
+  borrowerEgovphUniqid: string;
+  borrowerPhilsysNumber: string;
+  livenessSessionId: string;
+  expiresAtMs: number;
+};
+
+export const VERIFICATION_TTL_MS = 10 * 60_000;
+
+/** verificationId -> the matched borrower. See VerifiedBorrower above. */
+export const verifiedBorrowers = new Map<string, VerifiedBorrower>();
+
+/**
+ * A standalone Face Liveness session that passed the documented threshold, recorded
+ * server-side for the same reason as VerifiedBorrower: the high-value loan gate has to be
+ * enforced somewhere a client can't simply decline to call.
+ *
+ * Keyed by the session token, so a token can be spent exactly once.
+ */
+export type PassedLivenessCheck = { ownerId: string; expiresAtMs: number };
+
+export const passedLivenessChecks = new Map<string, PassedLivenessCheck>();
+
+/** Drops expired entries. Called opportunistically on read — no timers to leak. */
+export function pruneExpired(): void {
+  const now = Date.now();
+  for (const [key, value] of verifiedBorrowers) {
+    if (value.expiresAtMs < now) verifiedBorrowers.delete(key);
+  }
+  for (const [key, value] of passedLivenessChecks) {
+    if (value.expiresAtMs < now) passedLivenessChecks.delete(key);
+  }
+  for (const [key, value] of pendingOtps) {
+    if (value.expiresAtMs < now) pendingOtps.delete(key);
+  }
+}
+
+/**
  * Gives a brand-new store a starter catalogue instead of a blank product list —
- * called once, right after a StoreOwner is created (register/confirm and the
- * login-auto-provision path in routes/auth.ts). Emoji `thumbnail`s are the same
+ * called once, right after a StoreOwner is auto-registered from an eGov SSO profile
+ * (routes/auth.ts `registerOwnerFromProfile`). Emoji `thumbnail`s are the same
  * lightweight per-product icon approach as the ebilihan-hackathon prototype
  * (`product.thumbnail ?? '📦'`), not a real image asset pipeline.
  */

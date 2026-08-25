@@ -28,9 +28,9 @@ api.interceptors.response.use(
   async (error) => {
     // Only auto-logout when a request that WAS carrying our session token got rejected
     // (e.g. the backend restarted and its in-memory owner list is gone — see
-    // requireAuth.ts). A 401 from /auth/login/otp/confirm or /auth/register/confirm
-    // just means "wrong code" and never carries a bearer token — that should surface
-    // as an inline error on the OTP screen, not force a redirect while typing it.
+    // requireAuth.ts). Pre-session calls like POST /auth/sso/login carry no bearer
+    // token, and a failure there (an expired exchange_code, say) belongs inline on the
+    // sign-in screen rather than as a redirect back to the screen you are already on.
     const hadSessionToken = Boolean(
       axios.isAxiosError(error) && (error.config?.headers as Record<string, unknown> | undefined)?.Authorization,
     );

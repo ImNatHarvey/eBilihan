@@ -1,52 +1,50 @@
 import { api } from "./client";
-import type { EgovphProfile, StoreLocation, StoreOwner } from "@/types";
+import type { StoreLocation, StoreOwner } from "@/types";
 
-export async function ssoLogin(exchangeCode: string) {
-  const { data } = await api.post<{ token: string; owner: StoreOwner }>("/auth/sso/login", { exchangeCode });
-  return data;
-}
+export type SsoSession = {
+  token: string;
+  owner: StoreOwner;
+  /** True on a citizen's first ever sign-in — store name and location aren't set yet. */
+  needsOnboarding: boolean;
+};
 
 /**
- * Mobile-number + eMessage OTP login — the working sign-in path while
- * VITE_EGOVPH_AUTHORIZE_URL is unset (see CLAUDE.md). Only works for a mobile number
- * already linked to a store via registerConfirm.
+ * Redeems a single-use eGovPH exchange_code for an eBilihan session. The code arrives
+ * either from the Login as eGov widget's onSuccess, or from eGovPH opening our own SSO
+ * base URL with ?exchange_code=... appended. The backend does the two-call exchange
+ * (POST /api/token then POST /api/partner/sso_authentication) — the secret never
+ * reaches this app.
  */
-export async function loginOtpStart(mobile: string) {
-  const { data } = await api.post<{ message: string }>("/auth/login/otp/start", { mobile });
+export async function ssoLogin(exchangeCode: string) {
+  const { data } = await api.post<SsoSession>("/auth/sso/login", { exchangeCode });
   return data;
 }
 
-export async function loginOtpConfirm(mobile: string, otp: string) {
-  const { data } = await api.post<{ token: string; owner: StoreOwner }>("/auth/login/otp/confirm", { mobile, otp });
+/** The two public values the Login as eGov widget needs (partner_code + gateway host). */
+export async function getSsoWidgetConfig() {
+  const { data } = await api.get<{ partnerCode: string; host: string; partnerName?: string }>(
+    "/auth/sso/widget-config",
+  );
+  return data;
+}
+
+/** Free probe (eGov SSO check_access) — tells us up front if our partner code is live. */
+export async function getSsoHealth() {
+  const { data } = await api.get<{ ok: boolean; reason?: string }>("/auth/sso/health");
   return data;
 }
 
 /** Verifies the stored session is still valid against the backend — see authStore.hydrate(). */
 export async function getMe() {
-  const { data } = await api.get<{ owner: StoreOwner }>("/auth/me");
-  return data.owner;
-}
-
-/** Stands in for a real eGovPH SSO profile fetch — see CLAUDE.md and server/src/routes/auth.ts. */
-export async function fetchEgovphDemoProfile() {
-  const { data } = await api.get<{ profile: EgovphProfile }>("/auth/egovph/demo-profile");
-  return data.profile;
-}
-
-export async function registerStart(profile: EgovphProfile, storeName: string, location: StoreLocation) {
-  const { data } = await api.post<{
-    message: string;
-    pendingRegistration: { profile: EgovphProfile; storeName: string; location: StoreLocation };
-  }>("/auth/register/start", { profile, storeName, location });
+  const { data } = await api.get<{ owner: StoreOwner; needsOnboarding: boolean }>("/auth/me");
   return data;
 }
 
-export async function registerConfirm(profile: EgovphProfile, storeName: string, location: StoreLocation, otp: string) {
-  const { data } = await api.post<{ token: string; owner: StoreOwner }>("/auth/register/confirm", {
-    profile,
+/** Completes first-time setup with the two things eGovPH does not provide. */
+export async function completeOnboarding(storeName: string, location: StoreLocation) {
+  const { data } = await api.post<{ owner: StoreOwner; needsOnboarding: boolean }>("/auth/onboarding", {
     storeName,
     location,
-    otp,
   });
   return data;
 }

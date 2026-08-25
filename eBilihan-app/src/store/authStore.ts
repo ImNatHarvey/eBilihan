@@ -6,24 +6,30 @@ import type { StoreOwner } from "@/types";
 
 type AuthState = {
   owner: StoreOwner | null;
+  /** True between a citizen's first SSO sign-in and completing the onboarding screen. */
+  needsOnboarding: boolean;
   isHydrated: boolean;
-  login: (token: string, owner: StoreOwner) => Promise<void>;
+  login: (token: string, owner: StoreOwner, needsOnboarding: boolean) => Promise<void>;
+  setOwner: (owner: StoreOwner, needsOnboarding: boolean) => void;
   logout: () => Promise<void>;
   hydrate: () => Promise<void>;
 };
 
 export const useAuthStore = create<AuthState>((set) => ({
   owner: null,
+  needsOnboarding: false,
   isHydrated: false,
 
-  login: async (token, owner) => {
+  login: async (token, owner, needsOnboarding) => {
     await setSessionToken(token);
-    set({ owner });
+    set({ owner, needsOnboarding });
   },
+
+  setOwner: (owner, needsOnboarding) => set({ owner, needsOnboarding }),
 
   logout: async () => {
     await clearSessionToken();
-    set({ owner: null });
+    set({ owner: null, needsOnboarding: false });
   },
 
   /**
@@ -38,14 +44,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   hydrate: async () => {
     const { value: token } = await Preferences.get({ key: SESSION_TOKEN_KEY });
     if (!token) {
-      set({ owner: null, isHydrated: true });
+      set({ owner: null, needsOnboarding: false, isHydrated: true });
       return;
     }
     try {
-      const owner = await getMe();
-      set({ owner, isHydrated: true });
+      const { owner, needsOnboarding } = await getMe();
+      set({ owner, needsOnboarding, isHydrated: true });
     } catch {
-      set({ owner: null, isHydrated: true });
+      set({ owner: null, needsOnboarding: false, isHydrated: true });
     }
   },
 }));
