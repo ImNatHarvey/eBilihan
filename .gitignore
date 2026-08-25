@@ -1,0 +1,14 @@
+# Repo-root ignores. Each package also has its own .gitignore (eBilihan-app/.gitignore)
+# — a .gitignore only covers its own directory downwards, which is why root-level files
+# have to be listed here.
+
+# Never commit real credentials in any form.
+.env
+.env.local
+credentials.txt
+
+# `credentials.txt` is ALREADY TRACKED, so this line does not hide it — git ignores only
+# untracked files. It exists to stop the file being re-added after deletion. Removing it
+# from the working tree also does not remove it from the commits behind it: every value
+# it has ever held must be treated as compromised and rotated in the API Developer Portal,
+# independently of any history rewrite. See README.md > Credential hygiene.

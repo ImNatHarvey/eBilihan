@@ -16,12 +16,16 @@ This is a two-package monorepo, not a single app:
   eGov API secret and proxies requests for the mobile app. **It is not optional** — see
   Security model below.
 
-Ground truth for every eGov endpoint used here is
-`eBilihanReference/eGOV API/**/*.png` (screenshots of each API's docs/integration pages)
-and `eBilihanReference/eGOV API/API Credentials.png` (the exact credential field names).
-When extending an integration, re-read the relevant screenshot rather than guessing —
-several of these APIs have non-obvious contracts (see "API contracts" below) and this
-file cannot cover every field.
+Ground truth for every eGov endpoint used here is `eBilihanReference/eGOV API/**/*.pdf` —
+saved pages from the DICT **API Developer Portal** (`platforms.e.gov.ph`), one folder per
+API. Read them with `pdftotext -layout "<file>.pdf" -` rather than opening them as images.
+When extending an integration, re-read the relevant PDF rather than guessing — several of
+these APIs have non-obvious contracts (see "API contracts" below) and this file cannot
+cover every field.
+
+> The portal replaced an earlier set of per-product hosts; every legacy base URL and
+> credential is dead. Base URLs are now issued **with** each credential and are not
+> documented anywhere else — see "API contracts" below.
 
 ## Commands
 
@@ -101,9 +105,13 @@ only the resulting `session_id` (never a secret) flows back through `/server`.
   `payments.ts`, `verify.ts`, `loans.ts`, `wallet.ts`, `reports.ts`), each a thin axios
   wrapper around `/server`'s routes. `src/api/client.ts` holds the shared axios instance
   and attaches the session JWT from `@capacitor/preferences` to every request.
-- `src/lib/everifyFaceLiveness.ts` — loads eVerify's Face Liveness Web SDK
-  (`window.eKYC().start()`) and is the one place that talks to an eGov domain directly
-  from the frontend.
+- `src/lib/everifyFaceLiveness.ts` and `src/lib/egovLoginWidget.ts` — the only two places
+  the frontend talks to an eGov domain directly, both by design: eVerify's Face Liveness
+  Web SDK (`window.eKYC().start()`) and eGovPH's Login as eGov widget
+  (`EgovLogin.render()`). Neither ever sees a secret.
+- `src/features/auth/` — `LoginPage.tsx` (the eGovPH handoff, and the whole of sign-in),
+  `SsoCallbackPage.tsx` (`/egovph/sso?exchange_code=...`), `OnboardingPage.tsx` (store
+  name + location, first sign-in only).
 - `src/lib/receipt.ts` / `src/lib/loanAgreementPdf.ts` — PDF generation. The receipt uses
   jsPDF's text API directly (simple, thermal-receipt-shaped); the loan agreement renders
   a styled off-screen DOM node and rasterizes it with html2canvas before embedding in
@@ -123,7 +131,8 @@ only the resulting `session_id` (never a secret) flows back through `/server`.
   circular center button, the primary action — Wallet, Report). Structural pattern
   (not colors) ported from the ebilihan-hackathon prototype's own layout components.
 - `src/components/shared/LocationPicker.tsx` — cascading Region/Province/City/Barangay
-  picker (PSGC Cloud), used by both registration and the Reports form.
+  picker (PSGC Cloud), used by onboarding. **Reports uses a different one** —
+  `features/reports/ReportLocationPicker.tsx`, on eReport's own incompatible code system.
 - `src/components/ui/*` — hand-built shadcn/ui-style primitives (Button, Card + `StatTile`
   KPI tile, Input, Label, Badge, Dialog, `OtpInput` — 6 separate digit boxes) on Radix +
   CVA + Tailwind. **The shadcn CLI was never run** (it needs interactive prompts this
@@ -172,24 +181,41 @@ failed data fetch.
 
 ## API contracts (grounded in eBilihanReference — do not re-derive from memory)
 
-Every integration below was read directly from the screenshots in
-`eBilihanReference/eGOV API/`. Re-check the relevant screenshot before changing a
-request/response shape — some of these are easy to get subtly wrong from memory:
+Every integration below was read directly from the PDFs in
+`eBilihanReference/eGOV API/**/*.pdf` (the DICT API Developer Portal at
+`platforms.e.gov.ph`). Extract them with `pdftotext -layout <file>.pdf -` and re-read the
+relevant one before changing a request/response shape — several of these are easy to get
+subtly wrong from memory.
 
-- **eGovPH SSO**: `POST {base}/api/token` (`exchange_code`, `scope: "SSO_AUTHENTICATION"`,
-  `partner_code`, `partner_secret`) → `access_token`, then
-  `POST {base}/api/partner/sso_authentication` (Bearer) → citizen profile (`uniqid`,
-  `email`, `mobile`, name fields, `address`, `photo`, ...). **There is no "create
-  account" endpoint** — SSO only resolves an existing eGovPH identity. eBilihan's
-  "registration" is really "link an eGovPH identity to a new eBilihan store profile";
-  see `server/src/routes/auth.ts`. **Neither login nor registration currently uses this
-  path** — see "Login AND registration currently use a hardcoded demo eGovPH identity"
-  under Deviations below.
+**Base URLs are per-credential.** Each API's gateway base URL is issued together with its
+credential on that catalog's Credentials tab and appears nowhere else — not in the docs,
+not in any dialog afterwards. Every `{base}` below comes from an env var for that reason;
+never hardcode one.
+
+- **eGov SSO**: two calls. `POST {base}/api/token` (`exchange_code`,
+  `scope: "SSO_AUTHENTICATION"`, `partner_code`, `partner_secret`) → `access_token`
+  (valid 1 hour, free), then `POST {base}/api/partner/sso_authentication` (Bearer, empty
+  body) → citizen profile (`uniqid`, `email`, `mobile`, `birth_date`, `gender`, split
+  name fields, `address`, `photo`, ...). **1 credit per profile fetch** — the only charge
+  the portal documents anywhere.
+  **There is no authorize/redirect URL and never was.** eGovPH launches an integrated
+  service by opening *your* base URL with `?exchange_code=...` appended
+  (`https://<app>/egovph/sso?exchange_code=...` → `SsoCallbackPage`), or the citizen
+  authenticates in the **Login as eGov widget**
+  (`widgets.e.gov.ph/v1.0.0/egov-login.min.js`, `src/lib/egovLoginWidget.ts`), which runs
+  eGovPH's own mobile/email → OTP → PIN screens using only `partner_code` and hands back
+  an `exchange_code`. Both converge on `POST /auth/sso/login`. The code is **single-use
+  and short-lived** — redeem immediately, and never redeem twice (StrictMode will try).
+  Appendix A documents the four calls the widget makes (`check_access`, `otp_generate`,
+  `otp_validate`, `authenticate`), all free; only `check_access` is used directly here,
+  as a health probe. Sandbox accounts `+639090000001`…`5`, OTP `123456`, PIN `000000`.
+  **There is no "create account" endpoint** — SSO resolves an identity; eBilihan
+  auto-registers a store owner from the returned profile on first sign-in.
 - **eMessage**: one endpoint, `POST {base}/messaging/v1/sms/push` (header
-  `X-EMESSAGE-Auth`, body `{ number, message }`). It is a raw SMS sender with **no OTP
-  concept of its own** — all OTP generation/expiry/verification (for both registration
-  and login) is homegrown (`server/src/store/db.ts` `pendingOtps` + `routes/auth.ts`),
-  and eMessage is only used to deliver the text.
+  `X-EMESSAGE-Auth`, body `{ number, message }`, 201 on success). It is a raw SMS sender
+  with **no OTP concept of its own**. Sign-in no longer uses it — eGovPH runs that OTP.
+  What remains is the loan-confirmation code (`pendingOtps` in `server/src/store/db.ts` +
+  `routes/loans.ts`) and the loan-agreement notification.
 - **eGovPay**: `POST {base}/api/v1/transaction` (header `X-eGovPay-Token`) needs a
   `digest` field: `hash_hmac('sha256', "$amount|$txnid", $token)` — i.e. HMAC-SHA256
   keyed by the merchant token, over the string `"{amount}|{txnid}"`. This is why
@@ -197,17 +223,25 @@ request/response shape — some of these are easy to get subtly wrong from memor
   `computeDigest`). Also `GET {base}/api/v1/transaction/{uuid}` and
   `PUT {base}/api/v1/transaction/{uuid}/void`. Use a `test_`-prefixed token while
   integrating so no live funds move (per eGovPay's own docs).
+  `redirect_url` and `callback_url` are both required and both typed `url` — they are
+  built server-side from `APP_BASE_URL` / `SERVER_BASE_URL` (`routes/payments.ts`), not
+  passed up from the app, because a custom scheme like `ebilihan://` is not a URL the
+  gateway accepts and the app cannot know the backend's public origin.
+  `POST /payments/webhook` receives the status callbacks; it sits **before** the router's
+  `requireAuth` (eGovPay's server carries no session) and authenticates by recomputing
+  the same HMAC digest.
 - **NationalID eVerify**: `POST {base}/api/auth` (`client_id`, `client_secret`) →
-  `access_token`. Then either:
-  - `POST {base}/api/query` — demographics + `face_liveness_session_id` → full match
+  `data.access_token` + `data.expires_at` (**unix seconds, as a string**). Then either:
+  - `POST {base}/api/query` — demographics (`first_name`, `last_name`, `birth_date`
+    required; `middle_name`, `suffix` optional) + `face_liveness_session_id`
     (`Verify Personal Information`)
   - `POST {base}/api/query/qr/check` — QR value only, decode without biometric match
-  - `POST {base}/api/query/qr` — QR value + `face_liveness_session_id` → full match
-    (`QR Verify`) — **real, working, but not currently called by the UI** (see
-    DEMO_BORROWER_NAME below).
-  - A matched response has `data.code === "AAA001"`; anything else (e.g. face mismatch)
-    must block the action gating on it. See `server/src/routes/loans.ts`
-    `verify-borrower`.
+  - `POST {base}/api/query/qr` — QR value + `face_liveness_session_id` (`QR Verify`)
+  - A matched response carries `data.code`. The docs' own examples disagree — QR Verify
+    shows `AAA001`, Verify Personal Information shows `AAA000` — so
+    `server/src/routes/loans.ts` accepts **both** via `MATCHED_CODES`. Narrow that set
+    once the portal's full code list is confirmed. Anything outside it (face mismatch
+    above all) must block the action gating on it, and does.
 - **Two separate "Face Liveness" things — do not conflate them:**
   1. **eVerify's own embedded Face Liveness Web SDK** (client-side `<script>` from
      `hackathon-everify-face-liveness.e.gov.ph`, `window.eKYC().start({ pubKey })`) —
@@ -218,16 +252,23 @@ request/response shape — some of these are easy to get subtly wrong from memor
      (`https://liveness.everify.gov.ph/?t=basic&...`) — but it throws synchronously if
      `pubKey` is blank, which silently aborted the Loan flow back to square one before
      this was diagnosed (fixed by fetching the pubKey from `GET /verify/pubkey` instead
-     of assuming it's present client-side). `src/lib/everifyFaceLiveness.ts` wraps it and
-     **is called live** by `LoanVerificationFlow.tsx` — see DEMO_BORROWER_NAME below.
+     of assuming it's present client-side). Note the portal's Variables panel labels this
+     credential `public_api_key`; our env var is `EVERIFY_PUBKEY`.
+     `src/lib/everifyFaceLiveness.ts` wraps it and **is called live** by
+     `LoanVerificationFlow.tsx`. It **fails closed**: it returns a real `session_id` or it
+     throws. A previous version invented `demo-liveness-<timestamp>` after a 20s timeout,
+     which eVerify can only ever reject — while making the UI look like the check had
+     passed. Don't reintroduce that: a liveness check that can't report its result must
+     not report success.
   2. **A standalone "Face Liveness" REST product** (`POST {base}/v1/liveness/session`,
      `GET {base}/v1/liveness/result/{sessionToken}`, header `x-api-key`, its own
      separate credential). Its session tokens are a different namespace from
-     eVerify's SDK sessions — don't try to feed one into the other. Wired up in
-     `server/src/routes/liveness.ts` as a general-purpose utility (e.g. a possible
-     future owner-onboarding liveness check), but nothing in the current UI calls it.
-     The recommended security threshold from its own docs: reject anything below a
-     `confidence_score` of `95.0`, or a `status` other than `"SUCCEEDED"`.
+     eVerify's SDK sessions — don't try to feed one into the other. Used for the store
+     owner's own onboarding liveness check (`OnboardingPage.tsx` → `src/api/liveness.ts`).
+     Its documented security threshold — `status === "SUCCEEDED"` **and**
+     `confidence_score >= 95.0` — is enforced in `server/src/routes/liveness.ts`, which
+     returns a `passed` verdict rather than a raw score. Keep that decision server-side:
+     a client that only receives `passed` has nothing left to reinterpret.
 - **eReport**: `POST {base}/api/integration/token` (`access_code`) → short-lived
   `access_token`, used as Bearer for `submit_complaint`, `verify/request` (email OTP),
   `verify/confirm` (returns a **separate** `report_view_token`, header
@@ -261,6 +302,70 @@ hash-chained in-memory stand-in (clearly commented as such) so the rest of the a
 something to call. Do not present it as a real integration in docs, demos, or future
 code — replace its internals (only) once real eGovchain API docs exist.
 
+## Server-owned fields — read before touching any write endpoint
+
+**A client may set what it is the author of. The server owns everything derived from an
+external system's word, or from its own records.** This was violated across five write
+paths at once, so treat it as a standing rule rather than a fixed bug.
+
+**Never write `{ ...existing, ...req.body }`.** It was the root cause in four of the five
+cases. It silently grants write access to every field the type gains later, including ones
+that don't exist yet. Use an explicit allow-list (see `routes/products.ts`
+`EDITABLE_PRODUCT_FIELDS`) or an explicit destructure (see `routes/auth.ts` `/onboarding`).
+
+What that means concretely, and why:
+
+- **Payment status is written by eGovPay's Check Transaction response and nothing else.**
+  `POST /orders/:id/refresh-payment` takes **no body at all**. The old `PATCH /orders/:id`
+  accepted `{ paymentStatus: "paid" }` from any authenticated caller and appended a sale to
+  the ledger — the same capability as the "Simulate Payment Success" button that was
+  removed from the UI, still live in the API behind it. Deleting a button does not remove a
+  capability.
+- **Identity never comes from a request body.** A borrower's name reaches a loan only via
+  `verifiedBorrowers` (`store/db.ts`), keyed by an opaque `verificationId` minted inside
+  `recordVerification` after a real eVerify match. Previously the verified name lived in
+  React state and was posted back — which made the entire eVerify gate advisory, since any
+  client could POST a loan naming anyone. A gate the client can decline to apply is not a gate.
+- **Prices come from the stored product.** `POST /orders` reads `unitPrice` and `name` from
+  `products.get(...)`; the request supplies only `productId` and `quantity`. The total that
+  enters the ledger must never be a number the caller chose.
+- **Complainant identity comes from the owner record**, which is SSO-sourced and read-only.
+  Otherwise a session-holder can file an official complaint under an invented identity
+  *using our eReport credential*.
+
+The scoping that was already correct and must stay: `requireAuth` checks the owner still
+exists, and every route filters on `ownerId`. There is no cross-tenant path — the defects
+above were integrity, not confidentiality. Keep it that way.
+
+## Authentication is eGovPH's, not ours — don't add screens back
+
+eGovPH's partner requirements (SSO integration guide, Appendix B) are explicit that an
+integrated service must **disable or hide its own login and registration pages, and its
+own profile/password management**. Sessions and profile data belong to eGovPH. That is a
+scoring criterion, not a stylistic preference.
+
+So, concretely:
+
+- `LoginPage.tsx` is a single eGovPH handoff. There is no mobile-number field, no OTP
+  screen, and no registration tab. **Don't add one back**, however convenient — including
+  "just for the demo".
+- Name, birthdate, gender, address, email and mobile are rendered **read-only** wherever
+  they appear (`OnboardingPage.tsx`). They are mirrored from the SSO profile into
+  `StoreOwner` and only eGovPH may change them.
+- `/onboarding` exists because store name and location are eBilihan's own data, which
+  eGovPH has no concept of. It runs once, gated by `needsOnboarding` (server-side:
+  `!storeName || !location`), and is unreachable afterwards.
+- The one OTP eBilihan still owns is the **loan confirmation** in `routes/loans.ts`. That
+  is a second factor over recording money, not an identity check, so it does not conflict
+  with the above. eReport's email OTP is likewise eReport's own, and gates only report
+  *reading*.
+
+### Auto-registration, and matching returning citizens
+First sign-in auto-creates a `StoreOwner` from the SSO profile (`registerOwnerFromProfile`)
+and seeds the demo catalogue. Returning citizens are matched by `uniqid` first, then by
+name + birthdate, at which point the `uniqid` is **bound** to that owner so the next
+sign-in takes the fast path — exactly the sequence eGovPH's integration logic prescribes.
+
 ## Deviations from the original project brief, and why
 
 - **`@capacitor-community/barcode-scanner` → `@capacitor-mlkit/barcode-scanning`.** The
@@ -284,59 +389,18 @@ code — replace its internals (only) once real eGovchain API docs exist.
   optional — see Security model above. `/server` is a small Express app, not a
   full framework choice; if the team already has backend infra/conventions elsewhere,
   port these route handlers into that instead of standing up a second Node service.
-- **eGovPH "Registration" is not a real eGovPH endpoint.** See the eGovPH bullet above.
-- **Login AND registration currently use a hardcoded demo eGovPH identity, not a real
-  SSO round-trip.** The exact URL to open for eGovPH's SSO login/authorize redirect (to
-  obtain the initial `exchange_code`) was **not** captured — only eGovPH's
-  API-documentation tab was reviewed, not its Integration tab. Rather than block on
-  that:
-  - `GET /auth/egovph/demo-profile` (`server/src/routes/auth.ts`,
-    `DEMO_EGOVPH_PROFILE`) returns a fixed profile (name/email/mobile) standing in for
-    what a real `resolveEgovphProfile(exchangeCode)` call would return. Both
-    "Login via eGovPH SSO" and registration's "Continue with eGovPH" button call this.
-  - **Login**: no mobile-number input — it always targets the demo profile's number
-    (`DEMO_MOBILE_E164` in `src/lib/demoIdentity.ts`, sourced from `VITE_DEMO_MOBILE_E164`,
-    default `+639000000000`) via `POST /auth/login/otp/start` / `/otp/confirm`, landing
-    on a 6-box `OtpInput` (`src/components/ui/otp-input.tsx`). Only works once a store
-    has actually been registered with that number. **Must match `DEMO_MOBILE_E164` in
-    `server/.env`** (backing `DEMO_EGOVPH_PROFILE.mobile` in `server/src/routes/auth.ts`)
-    exactly, or first-time login 404s.
-  - **Registration**: "Continue with eGovPH" fetches the demo profile (with an
-    artificial ~900ms delay so it reads as a real fetch), then shows a "eGovPH Identity
-    Verified" panel with the (read-only) verified name/email, an editable Store Name,
-    and the Location picker (see below) before sending the OTP — no exchange-code
-    paste field anymore.
-  - The real-SSO code path (`Browser.open(VITE_EGOVPH_AUTHORIZE_URL)`, and
-    `resolveEgovphProfile`/`POST /auth/sso/login` server-side) is untouched and takes
-    over automatically once `VITE_EGOVPH_AUTHORIZE_URL` is set — but resuming
-    afterward needs a deep-link listener to catch the returned `exchange_code`, which is
-    **not built yet**. Swap `DEMO_EGOVPH_PROFILE`/`fetchEgovphDemoProfile()` back for
-    the real resolution once that URL and listener exist.
-- **Loan borrower verification uses a hardcoded demo name, but a real eVerify Face
-  Liveness check.** `LoanVerificationFlow.tsx`'s `DEMO_BORROWER_NAME`
-  (`"ARIEL SAYGAN ALBERTO JR."`) stands in for the identity *match* only — real eVerify
-  QR+liveness matching (`/loans/verify-borrower`) needs the demo eGovPH account to
-  actually be eVerify-linked to whatever QR gets scanned, not reliably available for a
-  live demo. Everything upstream of that name is real: the QR scan itself
-  (`scanOnce("qr")` — the scanned value is stored as the loan's
-  `borrowerEgovphUniqid`/`borrowerPhilsysNumber`, genuine data from the physical QR),
-  and the face capture, which calls eVerify's actual **Face Liveness Web SDK**
-  (`src/lib/everifyFaceLiveness.ts` → `window.eKYC().start({ pubKey })`, pubKey fetched
-  from `GET /verify/pubkey` so the raw key never ships in the bundle) — a real
-  full-screen liveness/anti-spoof check hosted at `liveness.everify.gov.ph` that
-  resolves with a `session_id` on success or rejects on failure/cancellation, exactly
-  per `eBilihanReference/eGOV API/eVerify/integration.png`. (The earlier
-  `FaceLivenessCaptureModal.tsx`/`faceCaptureStore.ts` — a fake front-camera capture
-  that always succeeded — was removed once this real SDK call replaced it.) Loan
-  creation is then gated behind an OTP to `DEMO_MOBILE_E164` (`POST /loans/otp/start` /
-  `/otp/confirm` in `server/src/routes/loans.ts`, same `pendingOtps` pattern as
-  login/registration) before `sendSms` fires the real loan-agreement text. The full real
-  eVerify match path (`POST /loans/verify-borrower`) is untouched and still works — swap
-  `DEMO_BORROWER_NAME` for a real `verifyBorrower()` call (passing the liveness
-  `session_id` this flow already obtains) once eVerify credentials/linkage are solid.
 - **Dark mode was removed on request** — the app is light-theme only
   (`src/index.css` has no `prefers-color-scheme: dark` block, and `dark:` variants were
   stripped from `components/ui/*`). Don't reintroduce `dark:` classes without being asked.
+- **No fabricated success values anywhere — this one matters most.** Earlier fallbacks
+  manufactured data that looked real whenever an upstream call failed: a
+  `demo-liveness-<timestamp>` session id after a 20s timeout, a `LOCAL-xxxx` eReport case
+  number, a `local-<orderId>` payment reference, a "Simulate Payment Success (testing
+  only)" button, and a hardcoded verified borrower name. All are gone, and the real error
+  surfaces instead. Each asserted something untrue about a government system — that a
+  person was physically present, that authorities had received a report of a serious
+  incident, that money had moved. Before adding any fallback here, ask whether it would
+  state something false to the person holding the phone; if it would, show the failure.
 
 ## Location picker — PSGC Cloud (not an eGov API)
 

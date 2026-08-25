@@ -2,9 +2,10 @@
 # New > Blueprint > select this repo. Render reads this file automatically (it must
 # sit at the repo root — the actual Node project lives in eBilihan-app/server).
 #
-# Every env var below is marked `sync: false`, meaning Render will prompt you to type
-# the real value in during setup — nothing here or in git ever holds an actual secret.
-# See eBilihan-app/server/.env.example for where to get each value.
+# Every credential below is marked `sync: false`, meaning Render prompts you to type the
+# real value in during setup — nothing here or in git ever holds an actual secret.
+# See eBilihan-app/server/.env.example for where to get each value, and note that the
+# API Developer Portal shows each secret only once, at creation.
 services:
   - type: web
     name: ebilihan-server
@@ -20,14 +21,28 @@ services:
         value: "*" # tighten to your Vercel URL once you have it, e.g. https://ebilihan.vercel.app
       - key: JWT_SECRET
         generateValue: true # Render auto-generates a strong random value — no need to type one
+
+      # Public origins. eGovPay and Face Liveness redirect real people to these, so both
+      # must be absolute HTTPS URLs — see server/.env.example.
+      - key: APP_BASE_URL
+        sync: false # your Vercel URL, e.g. https://ebilihan.vercel.app
+      - key: SERVER_BASE_URL
+        sync: false # this service's own URL, e.g. https://ebilihan-server.onrender.com
+
+      # Loans at or above this amount require the owner's own Face Liveness check.
+      # eBilihan's own lending policy, not an eGov requirement. Not a secret.
+      - key: LOAN_LIVENESS_THRESHOLD_PHP
+        value: 1000
+
+      # eGov SSO
       - key: EGOVPH_BASE_URL
         sync: false
       - key: EGOVPH_PARTNER_CODE
         sync: false
       - key: EGOVPH_PARTNER_SECRET
         sync: false
-      - key: EGOVPH_AUTHORIZE_URL
-        sync: false
+
+      # NationalID eVerify
       - key: EVERIFY_BASE_URL
         sync: false
       - key: EVERIFY_CLIENT_ID
@@ -36,20 +51,28 @@ services:
         sync: false
       - key: EVERIFY_PUBKEY
         sync: false
+
+      # eMessage
       - key: EMESSAGE_BASE_URL
         sync: false
       - key: EMESSAGE_API_TOKEN
         sync: false
+
+      # eGovPay
       - key: EGOVPAY_BASE_URL
         sync: false
       - key: EGOVPAY_API_TOKEN
         sync: false
       - key: EGOVPAY_SETTLEMENT_TEMPLATE_UUID
         sync: false
+
+      # eReport
       - key: EREPORT_BASE_URL
         sync: false
       - key: EREPORT_ACCESS_CODE
         sync: false
+
+      # Face Liveness (standalone)
       - key: FACE_LIVENESS_BASE_URL
         sync: false
       - key: FACE_LIVENESS_API_KEY
