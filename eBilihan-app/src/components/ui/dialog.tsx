@@ -40,6 +40,15 @@ const DialogContent = React.forwardRef<
         ref={ref}
         className={cn(
           "fixed left-1/2 top-1/2 z-50 w-[85%] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-brand-ink/10 bg-white p-6 shadow-lg",
+          // Content taller than the screen must scroll, not disappear.
+          //
+          // Without this the dialog is centred with -translate-y-1/2 and has no height
+          // bound, so anything taller than the viewport extends past BOTH edges with no
+          // way to reach it. That is invisible on a desktop and breaks completely on a
+          // phone: the loan flow roughly doubles in height when the "Identity Verified"
+          // card appears, so on a small screen the result rendered correctly and then sat
+          // off-screen — indistinguishable from the app having hung.
+          "max-h-[85vh] overflow-y-auto overscroll-contain",
           className,
         )}
         {...props}

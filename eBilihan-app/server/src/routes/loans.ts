@@ -90,6 +90,20 @@ function recordVerification(
   const gradeFailed = typeof meta?.result_grade === "string" && meta.result_grade.toUpperCase().startsWith("FAILED");
   const matched = data?.code === expectedCode && data?.verified !== false && !gradeFailed;
 
+  /**
+   * Log the verdict inputs — never the identity.
+   *
+   * `sendUpstreamError` only fires on a non-2xx, so a successful eVerify call that simply
+   * did not match left no trace at all: the response body was never recorded anywhere, and
+   * re-running the flow to see it costs a credit. `code` and `result_grade` are status
+   * values, not personal data; `full_name` is, so only its presence is recorded.
+   */
+  // eslint-disable-next-line no-console
+  console.info(
+    `[eVerify] verdict: matched=${matched} code=${data?.code ?? "none"} expected=${expectedCode} ` +
+      `verified=${data?.verified ?? "absent"} grade=${meta?.result_grade ?? "none"} hasName=${!!data?.full_name}`,
+  );
+
   if (!matched || !data?.full_name) {
     return {
       matched: false as const,

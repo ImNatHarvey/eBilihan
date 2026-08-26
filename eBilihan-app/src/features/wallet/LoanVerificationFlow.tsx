@@ -310,7 +310,18 @@ export function LoanVerificationFlow() {
               <Button size="lg" onClick={startQrVerification}>
                 <QrCode /> Start Verification
               </Button>
-              <Button variant="link" onClick={() => { setStep("manual-entry"); setFailure(null); }}>
+              {/*
+                `buttonVariants` sets `whitespace-nowrap` for the usual single-word button,
+                which forced this sentence onto one line and ran it off the right edge of
+                the dialog on a phone. Overridden here only — the shared variant is left
+                alone. `h-auto` because the default size pins a fixed height that wrapped
+                text would otherwise spill out of.
+              */}
+              <Button
+                variant="link"
+                className="h-auto whitespace-normal py-2 text-center leading-snug"
+                onClick={() => { setStep("manual-entry"); setFailure(null); }}
+              >
                 <Keyboard className="h-4 w-4" /> QR code won&apos;t scan? Enter details instead
               </Button>
             </>
