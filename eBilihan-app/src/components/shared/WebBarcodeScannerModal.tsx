@@ -23,6 +23,32 @@ const RETAIL_BARCODE_FORMATS = ["EAN_13", "EAN_8", "UPC_A", "UPC_E", "CODE_128",
  * `http://<lan-ip>`, which is why this only really works once deployed (or on
  * `localhost` in a desktop browser).
  */
+/**
+ * Releases the camera without letting teardown throw.
+ *
+ * ZXing's `controls.stop()` can reject with `UnknownError: setPhotoOptions failed` on
+ * Android Chrome — the browser refusing a photo-options call on a track that is already
+ * being torn down. Because `stop()` is async and its rejection was unhandled, it surfaced
+ * as an uncaught promise error in the console and, worse, could abandon the teardown
+ * partway: the camera track stays live and the next component to ask for it — eVerify's
+ * liveness iframe, moments later in the loan flow — has to contend for a device this page
+ * never released.
+ *
+ * The track is stopped directly as a fallback, since that is what actually frees the
+ * hardware.
+ */
+function stopControls(controls: IScannerControls | null | undefined): void {
+  if (!controls) return;
+  try {
+    const result = controls.stop() as unknown as Promise<void> | void;
+    if (result && typeof (result as Promise<void>).catch === "function") {
+      (result as Promise<void>).catch(() => undefined);
+    }
+  } catch {
+    // Teardown is best-effort; a failure here must not propagate.
+  }
+}
+
 export function WebBarcodeScannerModal() {
   const isOpen = useScannerStore((s) => s.isOpen);
   const kind = useScannerStore((s) => s.kind);
@@ -59,7 +85,7 @@ export function WebBarcodeScannerModal() {
           },
         );
         if (cancelled) {
-          controls.stop();
+          stopControls(controls);
           return;
         }
         controlsRef.current = controls;
@@ -76,7 +102,7 @@ export function WebBarcodeScannerModal() {
 
     return () => {
       cancelled = true;
-      controlsRef.current?.stop();
+      stopControls(controlsRef.current);
       controlsRef.current = null;
     };
   }, [isOpen, kind, close]);

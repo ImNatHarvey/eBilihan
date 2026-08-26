@@ -48,7 +48,25 @@ export function WalletPage() {
                 <Plus /> New Loan
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            {/*
+              Do not dismiss on an outside interaction.
+
+              eVerify's Face Liveness SDK appends its full-screen overlay to
+              `document.body`, while this dialog portals into the PhoneFrame container —
+              so the overlay is OUTSIDE the dialog's subtree. Radix's dismissable layer
+              watches document-level pointerdown, so the borrower's first tap inside
+              eVerify's own UI counted as "clicked outside" and closed this dialog,
+              unmounting the flow mid-verification.
+
+              The liveness check then completed anyway, the match call went out and was
+              billed, and the result was applied to a component that no longer existed —
+              React 18 discards that silently. The symptom was a vanished modal, no
+              error, and a spent credit.
+
+              Escape and the X button still close it; only the accidental backdrop
+              dismissal is blocked, which is right for a multi-step flow that records money.
+            */}
+            <DialogContent onInteractOutside={(event) => event.preventDefault()}>
               <DialogHeader>
                 <DialogTitle>New Loan</DialogTitle>
               </DialogHeader>
