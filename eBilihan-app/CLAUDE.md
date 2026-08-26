@@ -366,6 +366,29 @@ and seeds the demo catalogue. Returning citizens are matched by `uniqid` first, 
 name + birthdate, at which point the `uniqid` is **bound** to that owner so the next
 sign-in takes the fast path — exactly the sequence eGovPH's integration logic prescribes.
 
+## Post-submission work
+
+**Make "New Loan" a route, not a dialog.** `features/wallet/WalletPage.tsx` opens
+`LoanVerificationFlow` inside a Radix `Dialog`, and that mismatch has now produced two
+separate on-device bugs:
+
+1. The dialog closed itself mid-verification, because eVerify's SDK appends its overlay to
+   `document.body` — outside the dialog's subtree — so the borrower's first tap inside
+   eVerify's own UI registered as an outside click. The flow unmounted, the match call went
+   out anyway and was billed, and the result was applied to a component that no longer
+   existed. Symptom: vanished modal, no error, spent credit.
+2. Fixing that with `onInteractOutside` exposed the second: Radix's default `modal` sets
+   `pointer-events: none` on `<body>`, so eVerify's overlay rendered completely and
+   received no taps at all. Our own QR scanner (mounted in `AppShell`, also outside the
+   dialog) was inert for the same reason. Now `modal={false}`, at the cost of the focus
+   trap, scroll lock and `aria-hidden`.
+
+Both are symptoms of one thing: **a multi-step flow that hands off to third-party
+full-screen overlays does not belong in a modal.** As a route it needs no
+`onInteractOutside`, no `modal={false}`, and keeps its accessibility properties. Not done
+before submission because it is a structural change and the current form is working and
+measured; do it before this goes further.
+
 ## Deviations from the original project brief, and why
 
 - **`@capacitor-community/barcode-scanner` → `@capacitor-mlkit/barcode-scanning`.** The

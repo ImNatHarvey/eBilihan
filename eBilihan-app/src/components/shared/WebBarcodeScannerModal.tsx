@@ -34,18 +34,35 @@ const RETAIL_BARCODE_FORMATS = ["EAN_13", "EAN_8", "UPC_A", "UPC_E", "CODE_128",
  * liveness iframe, moments later in the loan flow — has to contend for a device this page
  * never released.
  *
- * The track is stopped directly as a fallback, since that is what actually frees the
- * hardware.
+ * The video's tracks are therefore stopped directly and unconditionally — not as a
+ * fallback — because that is the call that actually frees the hardware, and it must happen
+ * whether ZXing's own teardown succeeded, threw, or rejected.
  */
-function stopControls(controls: IScannerControls | null | undefined): void {
-  if (!controls) return;
+function stopControls(controls: IScannerControls | null | undefined, video?: HTMLVideoElement | null): void {
   try {
-    const result = controls.stop() as unknown as Promise<void> | void;
+    const result = controls?.stop() as unknown as Promise<void> | void;
     if (result && typeof (result as Promise<void>).catch === "function") {
       (result as Promise<void>).catch(() => undefined);
     }
   } catch {
-    // Teardown is best-effort; a failure here must not propagate.
+    // Swallowed on purpose — see below. The track stop is what actually matters.
+  }
+
+  // Stop the tracks ourselves regardless of whether `controls.stop()` succeeded, threw,
+  // or rejected. This is the part that frees the hardware: if ZXing's teardown fails
+  // partway the camera can stay live, and the next thing to ask for it — eVerify's
+  // liveness page, moments later in the loan flow — has to contend for a device this
+  // page never released.
+  const stream = video?.srcObject;
+  if (stream && typeof (stream as MediaStream).getTracks === "function") {
+    for (const track of (stream as MediaStream).getTracks()) {
+      try {
+        track.stop();
+      } catch {
+        // One failed track must not prevent stopping the rest.
+      }
+    }
+    video.srcObject = null;
   }
 }
 
@@ -63,11 +80,15 @@ export function WebBarcodeScannerModal() {
     let cancelled = false;
     setError(null);
 
+    // Captured now rather than read in cleanup: by teardown time the ref may already have
+    // been detached, and we would lose the handle to the very stream we need to stop.
+    const video = videoRef.current;
+
     (async () => {
       try {
         const { BrowserMultiFormatReader } = await import("@zxing/browser");
         const { BarcodeFormat, DecodeHintType } = await import("@zxing/library");
-        if (cancelled || !videoRef.current) return;
+        if (cancelled || !video) return;
 
         const formats = kind === "qr" ? ["QR_CODE"] : RETAIL_BARCODE_FORMATS;
         const hints = new Map();
@@ -79,13 +100,13 @@ export function WebBarcodeScannerModal() {
         const reader = new BrowserMultiFormatReader(hints);
         const controls = await reader.decodeFromConstraints(
           { video: { facingMode: "environment" } },
-          videoRef.current,
+          video,
           (result) => {
             if (result) close(result.getText());
           },
         );
         if (cancelled) {
-          stopControls(controls);
+          stopControls(controls, video);
           return;
         }
         controlsRef.current = controls;
@@ -102,7 +123,7 @@ export function WebBarcodeScannerModal() {
 
     return () => {
       cancelled = true;
-      stopControls(controlsRef.current);
+      stopControls(controlsRef.current, video);
       controlsRef.current = null;
     };
   }, [isOpen, kind, close]);

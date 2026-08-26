@@ -42,7 +42,36 @@ export function WalletPage() {
       <div>
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-brand-ink">Loans (Pautang)</h2>
-          <Dialog open={newLoanOpen} onOpenChange={handleDialogChange}>
+          {/*
+            `modal={false}` is deliberate, and the accessibility cost is accepted knowingly.
+
+            Radix's default `modal` sets `pointer-events: none` on <body> and marks
+            everything outside the dialog inert. This flow hands off to two full-screen
+            overlays that both append to `document.body` — eVerify's Face Liveness SDK and
+            our own QR scanner (mounted in AppShell, outside this subtree). Under the
+            default, both rendered perfectly and received no taps at all: eVerify's "Take
+            Live Selfie" page appeared complete, and neither its Start button nor its close
+            control could be pressed. Measured on-device: body and the scanner root both
+            reported `pointer-events: none`.
+
+            What we give up by turning it off:
+              - no focus trap — Tab can reach content behind the dialog
+              - the background scrolls behind it
+              - no `aria-hidden` on background content, so screen readers can reach it
+
+            Those are real, and this is still the better trade: a modal that makes a
+            government SDK's overlay untappable is broken in a way none of the three are.
+            A class- or selector-based patch was rejected because the SDK appends where it
+            likes and would break on their next release; this is location-agnostic.
+
+            Dismissal is unaffected — `onInteractOutside` still fires and is still
+            prevented below, so the dialog does not become dismissible again. Escape and
+            the X still close it.
+
+            Post-submission: make New Loan a route rather than a dialog and this whole
+            class of conflict disappears. See CLAUDE.md.
+          */}
+          <Dialog open={newLoanOpen} onOpenChange={handleDialogChange} modal={false}>
             <DialogTrigger asChild>
               <Button size="sm">
                 <Plus /> New Loan
