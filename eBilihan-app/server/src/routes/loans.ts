@@ -6,6 +6,7 @@ import { everifyClient } from "../lib/httpClients.js";
 import { getCachedToken } from "../lib/tokenCache.js";
 import { sendUpstreamError } from "../lib/upstreamError.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { expensiveRateLimit } from "../middleware/rateLimit.js";
 import {
   loans,
   owners,
@@ -117,7 +118,7 @@ function recordVerification(
  * face_liveness_session_id captured moments earlier by the eVerify Face Liveness Web SDK,
  * matched against PhilSys (eVerify > QR Verify).
  */
-router.post("/verify-borrower", async (req, res) => {
+router.post("/verify-borrower", expensiveRateLimit, async (req, res) => {
   const { qrValue, faceLivenessSessionId } = req.body as { qrValue?: string; faceLivenessSessionId?: string };
   if (!qrValue || !faceLivenessSessionId) {
     return res.status(422).json({ error: "qrValue and faceLivenessSessionId are required" });
@@ -149,7 +150,7 @@ router.post("/verify-borrower", async (req, res) => {
  * eVerify's own documentation leads with — "submit demographics + face_liveness_session_id
  * to the Verify endpoint" — so it is the documented path, not a workaround.
  */
-router.post("/verify-borrower/personal", async (req, res) => {
+router.post("/verify-borrower/personal", expensiveRateLimit, async (req, res) => {
   const { firstName, middleName, lastName, suffix, birthDate, faceLivenessSessionId } = req.body as {
     firstName?: string;
     middleName?: string;

@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { egovpayClient } from "../lib/httpClients.js";
 import { sendUpstreamError } from "../lib/upstreamError.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { expensiveRateLimit } from "../middleware/rateLimit.js";
 import { orders } from "../store/db.js";
 import { appendTransaction } from "../lib/egovchain.js";
 
@@ -105,7 +106,7 @@ router.post("/webhook", async (req, res) => {
 
 router.use(requireAuth);
 
-router.post("/generate", async (req, res) => {
+router.post("/generate", expensiveRateLimit, async (req, res) => {
   const { orderId } = req.body as { orderId?: string };
   const order = orderId ? orders.get(orderId) : undefined;
   if (!order || order.ownerId !== req.ownerId) {

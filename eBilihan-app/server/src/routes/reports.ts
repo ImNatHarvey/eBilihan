@@ -3,7 +3,9 @@ import { config } from "../config.js";
 import { ereportClient } from "../lib/httpClients.js";
 import { sendUpstreamError } from "../lib/upstreamError.js";
 import { getCachedToken } from "../lib/tokenCache.js";
+import { getCachedResponse, REFERENCE_DATA_TTL_MS } from "../lib/responseCache.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { expensiveRateLimit } from "../middleware/rateLimit.js";
 import { owners } from "../store/db.js";
 
 const router = Router();
@@ -68,7 +70,7 @@ router.post("/otp/confirm", async (req, res) => {
  * `gender` is the one exception, and only as a fallback: eReport requires it, and eGovPH
  * omits it when the citizen didn't consent to share it.
  */
-router.post("/", async (req, res) => {
+router.post("/", expensiveRateLimit, async (req, res) => {
   const owner = owners.get(req.ownerId!)!;
   const body = req.body as {
     gender?: string;
@@ -163,50 +165,69 @@ function unwrapJsonApi(data: { data: JsonApiItem[] }): { code: string; name: str
 
 router.get("/datasets/regions", async (_req, res) => {
   try {
-    const integrationToken = await getEreportIntegrationToken();
-    const response = await ereportClient.get("/api/integration/datasets/regions", {
-      headers: { Authorization: `Bearer ${integrationToken}` },
-    });
-    res.json(unwrapJsonApi(response.data));
+    res.json(
+      await getCachedResponse("ereport:regions", REFERENCE_DATA_TTL_MS, async () => {
+        const integrationToken = await getEreportIntegrationToken();
+        const response = await ereportClient.get("/api/integration/datasets/regions", {
+          headers: { Authorization: `Bearer ${integrationToken}` },
+        });
+        return unwrapJsonApi(response.data);
+      }),
+    );
   } catch (err) {
     sendUpstreamError(res, err, "Loading regions");
   }
 });
 
 router.get("/datasets/provinces", async (req, res) => {
+  const parent = String(req.query.regionCode ?? "");
   try {
-    const integrationToken = await getEreportIntegrationToken();
-    const response = await ereportClient.get("/api/integration/datasets/provinces", {
-      headers: { Authorization: `Bearer ${integrationToken}` },
-      params: { region_code: req.query.regionCode },
-    });
-    res.json(unwrapJsonApi(response.data));
+    res.json(
+      await getCachedResponse(`ereport:provinces:${parent}`, REFERENCE_DATA_TTL_MS, async () => {
+        const integrationToken = await getEreportIntegrationToken();
+        const response = await ereportClient.get("/api/integration/datasets/provinces", {
+          headers: { Authorization: `Bearer ${integrationToken}` },
+          params: { region_code: parent },
+        });
+        return unwrapJsonApi(response.data);
+      }),
+    );
   } catch (err) {
     sendUpstreamError(res, err, "Loading provinces");
   }
 });
 
 router.get("/datasets/municipalities", async (req, res) => {
+  const parent = String(req.query.provinceCode ?? "");
   try {
-    const integrationToken = await getEreportIntegrationToken();
-    const response = await ereportClient.get("/api/integration/datasets/municipalities", {
-      headers: { Authorization: `Bearer ${integrationToken}` },
-      params: { province_code: req.query.provinceCode },
-    });
-    res.json(unwrapJsonApi(response.data));
+    res.json(
+      await getCachedResponse(`ereport:municipalities:${parent}`, REFERENCE_DATA_TTL_MS, async () => {
+        const integrationToken = await getEreportIntegrationToken();
+        const response = await ereportClient.get("/api/integration/datasets/municipalities", {
+          headers: { Authorization: `Bearer ${integrationToken}` },
+          params: { province_code: parent },
+        });
+        return unwrapJsonApi(response.data);
+      }),
+    );
   } catch (err) {
     sendUpstreamError(res, err, "Loading municipalities");
   }
 });
 
 router.get("/datasets/barangays", async (req, res) => {
+  const parent = String(req.query.municipalityCode ?? "");
   try {
-    const integrationToken = await getEreportIntegrationToken();
-    const response = await ereportClient.get("/api/integration/datasets/barangays", {
-      headers: { Authorization: `Bearer ${integrationToken}` },
-      params: { municipality_code: req.query.municipalityCode },
-    });
-    res.json(unwrapJsonApi(response.data));
+    res.json(
+      await getCachedResponse(`ereport:barangays:${parent}`, REFERENCE_DATA_TTL_MS, async () => {
+        const integrationToken = await getEreportIntegrationToken();
+        const response = await ereportClient.get("/api/integration/datasets/barangays", {
+          headers: { Authorization: `Bearer ${integrationToken}` },
+          params: { municipality_code: parent },
+        });
+        return unwrapJsonApi(response.data);
+      }),
+    );
   } catch (err) {
     sendUpstreamError(res, err, "Loading barangays");
   }
@@ -215,15 +236,18 @@ router.get("/datasets/barangays", async (req, res) => {
 /** Real report categories (12 confirmed: scam, gas_station_concerns, red_tape, child_abuse, women_abuse, OFW_APP, overpricing, fire, "Senior Citizen", accident, crime, illegal_dumping) — replaces the earlier best-guess list. */
 router.get("/datasets/report-types", async (_req, res) => {
   try {
-    const integrationToken = await getEreportIntegrationToken();
-    const response = await ereportClient.get("/api/integration/datasets/report_types", {
-      headers: { Authorization: `Bearer ${integrationToken}` },
-    });
-    const types = (response.data as { data: JsonApiItem[] }).data.map((item) => ({
-      code: String(item.attributes.code),
-      name: String(item.attributes.name),
-    }));
-    res.json(types);
+    res.json(
+      await getCachedResponse("ereport:report-types", REFERENCE_DATA_TTL_MS, async () => {
+        const integrationToken = await getEreportIntegrationToken();
+        const response = await ereportClient.get("/api/integration/datasets/report_types", {
+          headers: { Authorization: `Bearer ${integrationToken}` },
+        });
+        return (response.data as { data: JsonApiItem[] }).data.map((item) => ({
+          code: String(item.attributes.code),
+          name: String(item.attributes.name),
+        }));
+      }),
+    );
   } catch (err) {
     sendUpstreamError(res, err, "Loading report categories");
   }
