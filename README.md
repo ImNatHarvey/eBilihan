@@ -2,203 +2,307 @@
 
 **Where Every Sari-Sari Store Grows Smarter.**
 
-eBilihan is an intelligent POS and digital ledger mobile app for Philippine sari-sari
-store owners. It's built with Vite + React + TypeScript, packaged for Android/iOS via
-Capacitor, and integrates six eGOV APIs: **eGovPH SSO**, **eMessage**, **eGovPay**,
-**NationalID eVerify**, **Face Liveness**, and **eReport**.
+An intelligent POS and digital ledger for Philippine sari-sari store owners — built with
+Vite + React + TypeScript, packaged for Android/iOS via Capacitor, and integrating six DICT
+eGov APIs: **eGov SSO**, **NationalID eVerify**, **eMessage**, **eGovPAY**, **eReport**, and
+**Face Liveness**.
 
-## Features
+**Setup and run:** [`SETUP.md`](SETUP.md) · **Credentials:** [`eBilihanReference/CREDENTIALS_GUIDE.md`](eBilihanReference/CREDENTIALS_GUIDE.md) · **Deploy:** [`DEPLOY_RUNBOOK.md`](DEPLOY_RUNBOOK.md)
 
-- **POS** — barcode/QR scanning (camera, native ML Kit on device / browser fallback on
-  web), cart, checkout, and thermal-style PDF receipts.
-- **Product management** — catalogue with starter demo products seeded per store.
-- **Digital wallet & loans** — borrower verification via QR scan + real-time face
-  liveness check (eVerify), OTP-gated loan agreements with generated PDF contracts.
-- **Reports** — submit civic complaints/reports (scam, overpricing, fire, etc.) through
-  eReport, with a dedicated region/province/city/barangay picker.
-- **eGovPH sign-in** — real eGov SSO. Citizens authenticate inside eGovPH (in-app
-  handoff, or the Login as eGov widget) and arrive already signed in; eBilihan has no
-  login, registration, or profile screens of its own (see
-  [Signing in](#signing-in) below).
+---
 
-## Tech stack
+## Integration status — what is proven, and what is not
 
-| | |
+Verified against the **live** DICT API Developer Portal gateway (`platforms.e.gov.ph`), not
+against mocks. This table is deliberately conservative: "verified" means we saw the real
+response, and anything short of that says so.
+
+| API | Status | Proven live | Not proven, and why |
+|---|---|---|---|
+| **eGov SSO** | ✅ **Verified end to end** | Widget → `exchange_code` → `POST /api/token` → `POST /api/partner/sso_authentication` → real citizen profile → session issued. Auto-registration and onboarding both exercised. | Production URL registration — needs a DICT administrator (see below) |
+| **eReport** | 🟡 **Read verified, write implemented** | Credentials; `integration/token` exchange; `report_types` (14 live categories) and `regions` datasets driving the real form | **Complaint submission deliberately not exercised** — see below |
+| **eMessage** | 🟡 **Verified to the API boundary** | Credentials; `POST /messaging/v1/sms/push` → `201 {"data":{"message":"SMS was successfully created."}}` | **Delivery.** The eGov sandbox identity's number receives no SMS by design; proving delivery needs a real handset |
+| **NationalID eVerify** | 🟡 **Credentials verified** | `POST /api/auth` authenticates; `POST /api/query/qr/check` reachable and validating input | **No identity match performed** — requires a physical PhilSys card and a camera |
+| **Face Liveness** | 🟡 **Session creation verified** | `POST /v1/liveness/session` → real hosted capture URL, correct callback threading | **Capture, result, and the 95.0 threshold** — requires a camera |
+| **eGovPAY** | 🔴 **Blocked on a platform gap** | Merchant token authenticates; settlement template, both URLs, items, amount, txnid, currency and expiries **all validate** | **Transaction creation** — the `digest` formula is under-specified. See below |
+
+**Everything testable without a camera has been tested.** The remaining gaps are physical
+(a card, a lens, a real phone) or upstream (an under-specified formula), not unwritten code.
+
+### eGovPAY — a documented endpoint that cannot be used from its documentation
+
+Generate Payment requires an HMAC `digest`. The published formula is
+`hash_hmac('sha256', "$amount|$txnid", $token)`, which does not specify whether `$token` is
+the full `test_`-prefixed header value or the bare key beneath it, nor how `$amount` is
+formatted.
+
+What we established, each at the cost of a credit:
+
+| Attempt | Result |
 |---|---|
-| Frontend | Vite, React 19, TypeScript, Tailwind CSS v4, Zustand, TanStack Query, Radix UI |
-| Mobile shell | Capacitor 8 (Android/iOS) |
-| Backend | Express 5 + TypeScript ("BFF" — backend-for-frontend) |
-| Auth | eGov SSO (eGovPH-managed identity) exchanged for eBilihan-issued JWT sessions (`jsonwebtoken`) |
+| Bare token in the header | `401 invalid_api_header` |
+| `test_`-prefixed header, digest over `"120\|<txnid>"` | `422 {"errors":{"digest":["The digest is not valid."]}}` |
+| `test_`-prefixed header, digest over `"120.0000\|<txnid>"` | `422`, same |
 
-## Project structure
+The gateway faults **only** `digest` — every other field validates — so the integration is
+correct but for one under-specified value. The portal's AI assistant supplied a worked
+example whose digest **does not reproduce**: its own stated key and string
+(`test_abcdef0123456789abcdef0123456789`, `"120.0000|MYTXNID123"`) yield
+`6d727f54a7f935e8…`, not the `2023908815121b6d…` it claimed.
 
-This is a two-package monorepo:
+We have stopped guessing rather than spend further credits, and raised it with the
+organisers. This is a platform documentation gap, and other teams will hit it.
 
+### eReport — why the write path is deliberately unexercised
+
+`POST /api/integration/submit_complaint` is implemented against the documented contract and
+is **not called in testing**. eReport has no sandbox mode, no test flag, no test
+`report_type`, and no documented way to withdraw a submission — confirmed with the portal's
+own assistant.
+
+Any test submission would therefore file a genuine complaint into a live government triage
+queue, consuming a real caseworker's attention, with no way to recall it. **We chose an
+unverified endpoint over a false report.** The read path, the datasets, and the form are all
+live and real.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph device["📱 Citizen's device — TRUSTED WITH NO SECRETS"]
+        app["eBilihan app<br/>(Vite + React + Capacitor)"]
+    end
+
+    subgraph our["🔒 eBilihan backend (BFF) — TRUST BOUNDARY"]
+        api["Express API<br/>holds every eGov credential<br/>computes eGovPay HMAC<br/>owns all financial state"]
+        ledger[("In-memory store<br/>owners · products · orders · loans")]
+    end
+
+    subgraph egov["🏛️ DICT eGov APIs — platforms.e.gov.ph"]
+        sso["eGov SSO"]
+        everify["NationalID eVerify"]
+        emsg["eMessage"]
+        pay["eGovPAY"]
+        rep["eReport"]
+        live["Face Liveness"]
+    end
+
+    subgraph direct["⚠️ Documented exceptions — device talks direct"]
+        widget["eGovPH Login widget<br/>widgets.e.gov.ph<br/>partner_code only"]
+        sdk["eVerify Face Liveness SDK<br/>public key only"]
+    end
+
+    app -->|"Bearer: eBilihan session JWT"| api
+    api --> ledger
+    api -->|"partner_secret"| sso
+    api -->|"client_secret"| everify
+    api -->|"X-EMESSAGE-Auth"| emsg
+    api -->|"X-eGovPay-Token + HMAC"| pay
+    api -->|"access_code"| rep
+    api -->|"x-api-key"| live
+
+    app -.->|"no secret crosses"| widget
+    app -.->|"no secret crosses"| sdk
+    widget -.->|"exchange_code"| app
+    sdk -.->|"session_id"| app
+
+    pay -->|"unauthenticated webhook<br/>treated as a hint, never trusted"| api
+
+    style our fill:#e8f0fe,stroke:#0241E8,stroke-width:3px
+    style direct fill:#fff8e1,stroke:#E9C400,stroke-width:2px
+    style device fill:#f5f5f5,stroke:#2E353B
+    style egov fill:#fdeaea,stroke:#A80E13
 ```
-eBilihan-app/
-├─ src/           # Capacitor mobile app (Vite + React + TS)
-└─ server/        # Express/TypeScript backend-for-frontend (BFF)
+
+**The trust boundary is the backend.** No eGov secret ever reaches the device — Vite inlines
+every `VITE_` variable into the bundle that ships inside the APK, so anything there is
+readable by anyone who unzips it.
+
+**Two documented exceptions**, both of which carry only public values: eGovPH's own login
+widget (needs `partner_code`, which its documentation calls safe to expose) and eVerify's
+Face Liveness SDK (needs a *public* key). Even `partner_code` is not baked into the bundle —
+the app fetches it at runtime from `GET /auth/sso/widget-config`, so rotating a credential is
+a server change rather than an app rebuild and store re-release.
+
+### Sign-in — eGov SSO
+
+```mermaid
+sequenceDiagram
+    actor C as Store owner
+    participant App as eBilihan app
+    participant W as eGovPH widget
+    participant BE as eBilihan backend
+    participant SSO as eGov SSO gateway
+
+    Note over App,W: No secret crosses this line
+    C->>App: Opens /login
+    App->>BE: GET /auth/sso/widget-config
+    BE-->>App: { partnerCode, host }
+    App->>W: EgovLogin.render({ partnerCode, host })
+    C->>W: mobile → OTP → eGov PIN
+    W-->>App: onSuccess({ exchangeCode })
+
+    Note over App,BE: Secret side begins here
+    App->>BE: POST /auth/sso/login { exchangeCode }
+    BE->>SSO: POST /api/token (+ partner_secret)
+    SSO-->>BE: { access_token }  — free, 1h
+    BE->>SSO: POST /api/partner/sso_authentication
+    SSO-->>BE: citizen profile  — 1 credit
+    BE->>BE: match by uniqid → else name+birthdate → else auto-register
+    BE-->>App: { token, owner, needsOnboarding }
+    App-->>C: Onboarding (first time) or Home
 ```
 
-The backend is **not optional**. It holds every eGov API secret
-(`partner_secret`, `client_secret`, API tokens, HMAC signing keys) so they never ship
-inside the built mobile bundle — see [Security model](#security-model).
+**No login form, no password, no registration screen** — eGovPH's partner requirements ask
+integrated services not to have them, and eBilihan doesn't. Identity fields are read-only.
 
-## Getting started
+### Loan issuance — the identity gate
 
-**Full instructions: [`SETUP.md`](SETUP.md)** — prerequisites, both installs, the two-terminal
-run, how to verify it works before spending an API credit, the Android build, and
-troubleshooting. Every command there states the directory it runs from.
+```mermaid
+sequenceDiagram
+    actor O as Store owner
+    participant App as eBilihan app
+    participant SDK as eVerify Liveness SDK
+    participant BE as eBilihan backend
+    participant EV as NationalID eVerify
 
-Quickstart, from the repository root. Node 20.19+ or 22.12+; two packages, installed
-separately; **backend first**:
+    O->>App: Scan borrower's National ID QR
+    App->>SDK: window.eKYC().start({ pubKey })
+    Note over SDK: Real biometric capture
+    alt Capture completes
+        SDK-->>App: { session_id }
+    else Timeout / cancel / no response
+        SDK--xApp: LivenessIncompleteError
+        App-->>O: "The face check didn't finish" — NOT "we couldn't match you"
+        Note over App,BE: No eVerify call. No loan possible.
+    end
 
-```bash
-# Terminal 1 — backend, port 4000
-cd eBilihan-app/server
-npm install
-cp .env.example .env      # then fill it in — see the credentials guide below
-npm run dev
+    App->>BE: POST /loans/verify-borrower { qrValue, session_id }
+    BE->>EV: POST /api/auth → POST /api/query/qr
+    EV-->>BE: { code, full_name } or { verified:false, result_grade:"FAILED_FACE" }
+
+    alt Matched (AAA001)
+        BE->>BE: Store identity server-side, 10-min TTL
+        BE-->>App: { verificationId, borrowerName }
+        O->>App: Amount + due date
+        App->>BE: POST /loans/otp/confirm { verificationId, otp }
+        BE->>BE: Read borrower from the SERVER record, never the request
+        BE-->>App: Loan created
+    else Not matched
+        BE-->>App: { matched:false, reason }
+        Note over BE: No verificationId issued — loan structurally impossible
+    end
 ```
 
-```bash
-# Terminal 2 — frontend, port 5173
-cd eBilihan-app
-npm install
-cp .env.example .env      # defaults are correct for local development
-npm run dev
-```
+**The borrower's identity never travels through the client.** Verification returns an opaque
+`verificationId`; the name, PhilSys number and eGovPH uniqid are read from a server-held
+record at loan creation. A client cannot name a borrower eVerify never matched.
 
-Open <http://localhost:5173> and sign in with a sandbox account (`+639090000001`, OTP
-`123456`, PIN `000000`).
+**Three failure kinds, kept distinct**, because conflating them harms a real person:
+*incomplete* (our camera failed — makes no claim about anyone), *rejected* (eVerify looked and
+said no), *unavailable* (upstream error). Telling an owner "we couldn't match this borrower"
+when a widget hung accuses a customer of fraud over a UI bug.
 
-## Environment variables
-
-Both `.env.example` files document every variable inline — what it is, what breaks without
-it, which portal catalog issues it, and whether the portal shows it only once.
-
-- `eBilihan-app/server/.env.example` — 22 variables, including all seven shown-once secrets.
-- `eBilihan-app/.env.example` — 3 variables, all URLs. **No secret ever belongs here**: Vite
-  inlines `VITE_` variables into the bundle that ships inside the APK.
-
-**To obtain the actual values:**
-[`eBilihanReference/CREDENTIALS_GUIDE.md`](eBilihanReference/CREDENTIALS_GUIDE.md) walks the
-six API catalogs in the order to do them, maps each returned value to its variable, and marks
-clearly where the portal's own documentation runs out.
-
-Open questions for the portal's AI assistant — two of which change code — are in
-[`eBilihanReference/PORTAL_QUESTIONS.md`](eBilihanReference/PORTAL_QUESTIONS.md).
-
-## Signing in
-
-There is no username, no password, and no registration form — eBilihan does not manage
-identities. eGovPH does. A citizen reaches the app already authenticated, one of two ways:
-
-1. **In-app handoff.** eGovPH opens eBilihan at `/egovph/sso?exchange_code=<code>`. In a
-   browser that is an ordinary navigation; in the native shell the URL arrives as a
-   Capacitor deep link and is routed to the same screen.
-2. **Login as eGov widget.** eGovPH's own widget renders on the sign-in screen and runs
-   its mobile/email → OTP → eGov PIN flow, then hands back an `exchange_code`.
-
-> **On the widget's appearance:** its OTP and PIN screens render in eGovPH's own styling
-> rather than eBilihan's — the widget exposes no documented theme or appearance option
-> (`target`, `partnerCode`, `host`, `partnerName` are the whole documented surface). We
-> deliberately do not override it: the script URL is version-pinned per eGovPH's own
-> instruction, and CSS hacks against a third-party government component would break on
-> their next release.
-
-Either way the backend redeems that single-use code
-(`POST /api/token` → `POST /api/partner/sso_authentication`) and issues an eBilihan
-session. First-time citizens are auto-registered from their eGovPH profile and complete a
-one-off onboarding step for their **store name and location** — the only two fields
-eGovPH has no concept of. Everything else (name, birthdate, gender, address, email,
-mobile) is mirrored read-only from eGovPH and can only be changed there.
-
-**Testing without a real eGovPH account:** the portal provides sandbox citizens
-`+639090000001` … `+639090000005`, with a fixed OTP of `123456` and PIN `000000`. No SMS
-is actually sent, and these widget calls are free of charge. The eGov SSO catalog page
-also has a **Generate exchange code** button that mints a code for a chosen test account,
-which can be fed straight to the backend.
+---
 
 ## Security model
-
-The mobile app never holds an eGov secret — Vite inlines every `VITE_`-prefixed env var
-into the built bundle shipped inside the APK/IPA, so anything sensitive there is
-extractable. `server/` exists specifically to hold secrets (eGovPH `partner_secret`,
-eVerify `client_secret`, eGovPay's merchant token/HMAC key, eReport's `access_code`) and
-expose only narrow, safe endpoints to the app. The two exceptions are eVerify's Face
-Liveness Web SDK and eGovPH's Login as eGov widget, which the device talks to directly
-per those APIs' own integration guides — neither ever receives a secret.
-
-Even eGovPH's `partner_code` — which its own documentation calls safe to expose in a
-browser — is not baked into the bundle. The app fetches it at runtime from
-`GET /auth/sso/widget-config`, so rotating a credential is a server-side change rather
-than an app rebuild and store re-release.
 
 ### The ledger is server-authoritative
 
 No client-supplied value determines financial state:
 
-- **Payment status** is written only from eGovPay's own Check Transaction response. The app
-  can ask for a re-check (`POST /orders/:id/refresh-payment`, which takes no body); it
-  cannot assert an outcome. eGovPay's status callback is treated as an unauthenticated hint
-  from the open internet — it triggers a fresh query to the gateway, and its own payload is
-  never trusted, whether or not it turns out to be signed.
+- **Payment status** is written only from eGovPay's Check Transaction response. The app can
+  request a re-check (`POST /orders/:id/refresh-payment`, which takes **no body**); it cannot
+  assert an outcome. eGovPay's callback is an unauthenticated request from the open internet,
+  so it is treated as a hint that triggers a fresh query — its payload is never trusted, and
+  that holds whether or not it turns out to be signed.
 - **A borrower's identity on a loan** can only originate from a server-held eVerify match.
-  Verification returns an opaque id; the name, PhilSys number and eGovPH uniqid are read
-  from that server-side record at loan creation, so a loan cannot be attached to someone
-  eVerify never matched.
-- **Order totals** are computed from stored product prices, not from figures sent by the app.
-- **Complainant identity** on an eReport filing comes from the signed-in owner record,
-  itself mirrored read-only from eGovPH — not from the request body.
+- **Order totals** are computed from stored product prices, not figures sent by the app.
+- **Complainant identity** on an eReport filing is read from the signed-in owner record.
 
-**Lending policy, stated plainly because it isn't an API rule:** eBilihan declines to record
-credit against a borrower under 18, and requires the store owner to pass their own Face
-Liveness check for loans at or above `LOAN_LIVENESS_THRESHOLD_PHP` (default ₱1,000). Neither
-is imposed by any eGov API — eVerify will happily match a minor. Both are our decisions.
+This followed an audit that found the opposite across five write paths — `PATCH /orders/:id`
+accepted `{paymentStatus:"paid"}` from any authenticated caller, `PUT /loans/:id` spread the
+request body over a verified loan, order totals came from a client `unitPrice`. All are
+closed; the standing rule is documented in `eBilihan-app/CLAUDE.md`.
 
-### Credential hygiene
+### Credentials
 
-**`credentials.txt` at the repo root holds real credential values and is tracked in git.**
-Two things follow from that, and they are independent:
+Every secret lives in `eBilihan-app/server/.env` and never leaves the backend. The frontend
+`.env` holds only URLs. Seven values are shown once at creation by the portal — see
+[`CREDENTIALS_GUIDE.md`](eBilihanReference/CREDENTIALS_GUIDE.md).
 
-1. **Deleting the file does not remove it from history.** It stays readable via
-   `git log -p` and `git show <sha>:credentials.txt`, and in every clone or fork already
-   taken. A deletion commit is cosmetic from a security standpoint.
-2. **Rewriting history is a separate decision, and is not sufficient on its own.** A purge
-   rewrites every commit SHA, breaks existing clones, and requires a force-push — and it
-   still cannot un-leak anything already fetched.
+Git history was rewritten with `git-filter-repo` to remove a `credentials.txt` that had been
+committed early in development, along with a real email address and mobile number in source
+and documentation. **Every credential that file ever held must be treated as compromised and
+rotated** — a rewrite does not un-leak anything already cloned.
 
-So: **treat every value that has ever appeared in that file as compromised and rotate it
-in the API Developer Portal**, regardless of what happens to the history. Because the
-portal migration requires generating fresh credentials anyway, the practical order is —
-generate new credentials → verify all six integrations → revoke the old ones in the
-portal → delete the file → *then* decide about history separately.
+### Credit safety
 
-The root `.gitignore` lists `credentials.txt`, which prevents it being re-added but does
-not untrack the existing copy.
+eGov API calls are metered against a shared, finite balance, and running dry means every
+integration returns `429` mid-demo. Two defences:
+
+- **Server-side caching** of eReport reference data (`lib/responseCache.ts`, 24h TTL,
+  single-flight). Report types and region lists change about once a year, so N visitors cost
+  the same as one. Client-side query options (`EGOV_REFERENCE_QUERY`) stop one browser
+  refetching; this stops the *second visitor* costing anything.
+- **Rate limiting** on every route that reaches an eGov API (`middleware/rateLimit.ts`) — 20
+  billed calls per minute per client, 5 for filing a report, creating a payment, or verifying
+  an identity. A brake on runaway spend, not a security control.
+
+Both exist because of a real incident: a 30-second `staleTime` plus TanStack Query's default
+`refetchOnWindowFocus` re-fetched two billed endpoints on every return to the tab —
+unattended, roughly 2 credits per refocus.
+
+---
+
+## Stack
+
+| | |
+|---|---|
+| Frontend | React 19, TypeScript, Vite 8, Tailwind CSS v4, Zustand, TanStack Query, Radix UI, Recharts |
+| Mobile | Capacitor 8 (Android/iOS), ML Kit barcode scanning, ZXing web fallback |
+| Backend | Express 5, TypeScript, `jsonwebtoken`, axios |
+| PDF | jsPDF + html2canvas (loan agreements), jsPDF text API (receipts) |
+| Auth | eGov SSO → eBilihan-issued JWT sessions |
+
+Two packages, installed independently — `eBilihan-app/` and `eBilihan-app/server/`. Node
+20.19+ or 22.12+ (Vite 8's requirement; not enforced by `engines`).
+
+## Features
+
+- **POS** — barcode/QR scanning, cart, checkout, thermal-style PDF receipts
+- **Products** — catalogue with stock tracking and low-stock thresholds
+- **Wallet & loans** — borrower verification via National ID QR + live face check, OTP-gated
+  loan creation, generated PDF agreements
+- **Reports** — civic complaints through eReport with live categories and its own PSGC-derived
+  location codes
+- **eGovPH sign-in** — real SSO; no login, registration, or profile screens of our own
+
+**Lending policy, stated because it is ours and not any API's:** no credit is recorded against
+a borrower under 18, and loans at or above `LOAN_LIVENESS_THRESHOLD_PHP` (default ₱1,000)
+require the store owner's own Face Liveness check. eVerify will match a minor perfectly
+happily; declining is our decision.
+
+## Not a real integration
+
+`server/src/lib/egovchain.ts` is a **hash-chained in-memory stand-in**, clearly labelled as
+such. `eBilihanReference/` contains no eGovchain documentation — no base URL, no auth scheme,
+nothing. It exists so the wallet has a ledger to read. It is **not** presented as one of the
+six integrations and should not be demonstrated as live.
 
 ## Deployment
 
-- **Frontend** → Vercel (`vercel.json` included).
-- **Backend** → Render (`render.yaml` included).
+Frontend → Vercel (`vercel.json`). Backend → Render (`render.yaml`, all 22 variables
+`sync: false`). Full sequence in [`DEPLOY_RUNBOOK.md`](DEPLOY_RUNBOOK.md).
 
-Set each service's environment variables in its respective dashboard (Vercel /
-Render) — `.env` files are gitignored and never committed.
+**Known limitation:** the backend store is in-memory, so a Render cold start signs everyone
+out and costs one credit per re-authentication.
 
-## Commands reference
+## Open questions with DICT
 
-### Frontend
-```
-npm run dev       # Vite dev server
-npm run build      # tsc -b && vite build -> dist/
-npm run lint       # oxlint
-npm run preview    # preview a production build
-```
-
-### Backend
-```
-npm run dev        # tsx watch src/index.ts
-npm run build       # tsc -p tsconfig.json
-npm run start       # node dist/index.js (run build first)
-```
+Tracked in [`eBilihanReference/PORTAL_QUESTIONS.md`](eBilihanReference/PORTAL_QUESTIONS.md).
+Outstanding and blocking: the eGovPay digest formula (Q2e), per-endpoint credit billing (Q3 —
+the assistant restated our own observations rather than answering), and registration of the
+production SSO base URL, which requires a DICT administrator.
