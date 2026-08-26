@@ -127,22 +127,18 @@ function recordVerification(
   console.error(`[eVerify] verdict: matched=${matched}`, JSON.stringify(diagnostics));
 
   /**
-   * TEMPORARY — REMOVE BEFORE SUBMISSION.
+   * There was briefly a full-response log here. It is gone and must not come back.
    *
-   * Logs eVerify's ENTIRE response when a verdict is not matched. This contains personal
-   * data — full name, PhilSys reference, a photo URL — which is why it is server-side only
-   * (never returned to the client), fires only on the rejection path, and must not survive
-   * into anything handling other people's identities.
+   * It wrote eVerify's entire payload — real name, home address, birth date, PhilSys
+   * reference, photo URL — into the hosting provider's log store, where it persists beyond
+   * this process, is readable by anyone with dashboard access, and cannot be selectively
+   * deleted. That is a far worse outcome than the diagnostic gap it was closing, and the
+   * "remove before submission" marker was not good enough: PII should never be written in
+   * the first place, not written and scheduled for cleanup.
    *
-   * It exists because eVerify's real response does not match its documentation: a
-   * confirmed-genuine ID and face returned `code: "FOJ3128"` (a format appearing in no
-   * documentation), `result_grade: 1` (numeric, where the docs show the string
-   * "FAILED_FACE"), and no `verified` field at all. We cannot design a correct match rule
-   * against a shape we have never seen in full, and each attempt to observe it costs a
-   * credit.
+   * The `diagnostics` object above carries what is actually needed to reason about a
+   * verdict — status values, plus whether a name was present, never the name itself.
    */
-  // eslint-disable-next-line no-console
-  if (!matched) console.error("[eVerify] RAW (temporary, contains PII):", JSON.stringify({ data, meta }));
 
   if (!matched || !data?.full_name) {
     return {
