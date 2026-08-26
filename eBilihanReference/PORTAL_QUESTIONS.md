@@ -3,7 +3,7 @@
 Thirteen questions for the DICT API Developer Portal's embedded AI assistant, which is trained
 on the API directory. Each is written to be pasted verbatim.
 
-**Five are blocking** — Q1, Q2 (including Q2e), Q3, Q12 and Q13. Each changes code, an estimate,
+**Six are blocking** — Q1, Q2 (including Q2e), Q3, Q12, Q13 and Q14. Q14 supersedes Q1: it is a live observation from a real ID, not an assertion. Each changes code, an estimate,
 or whether a path can be exercised at all. The rest close gaps where this project is
 inferring rather than reading.
 
@@ -24,6 +24,7 @@ Paste answers back into this file under each question as you get them.
 | 11 | Liveness session reuse | no | Whether one check can serve two calls |
 | 12 | Exchange-code partner binding | **YES** | Whether the portal's test tool can validate our credentials at all |
 | 13 | eReport test mode for submit_complaint | **YES** | Whether the eReport write path can be exercised at all |
+| 14 | eVerify returns an undocumented response shape | **YES** | How `matched` is decided at all — live evidence, strongest in this file |
 
 ---
 
@@ -307,5 +308,56 @@ the message body is not consent from whoever triages it.
 **If the answer is no:** eReport's write path stays documented as *"implemented against the
 documented contract, not exercised"*, and the README and video say exactly that. An honest
 gap is preferable to a case number obtained by filing something untrue.
+
+**Answer:**
+
+---
+
+## Q14 — eVerify returns an undocumented response shape · **BLOCKING** *(live observation)*
+
+> For NationalID eVerify `POST /api/query/qr`: I submitted a genuine PhilSys ID together
+> with a live Face Liveness session for the **same person who owns that ID**, and received
+> HTTP 200 with:
+>
+> ```json
+> { "data": { "code": "FOJ3128", "full_name": "<present>", ... },
+>   "meta": { "result_grade": 1, ... } }
+> ```
+>
+> This does not match your documentation in three ways:
+>
+> 1. **`data.code` is `"FOJ3128"`** — not `AAA000` or `AAA001`, the only values your
+>    examples and your assistant describe. What does `FOJ3128` mean? Please list every
+>    possible `code` value with its meaning, including the format family this belongs to.
+> 2. **`meta.result_grade` is the number `1`** — your documentation shows a string
+>    (`"FAILED_FACE"`). Is `result_grade` numeric or a string? If numeric, what does `1`
+>    signify, and what is the full scale?
+> 3. **`data.verified` was absent entirely** — your face-mismatch example shows
+>    `"verified": false`. Is `verified` only present on failure, or has the field been
+>    removed?
+>
+> The practical question: **given a response like the one above, how do I determine
+> whether the identity was successfully matched?** I need a rule I can implement that is
+> correct for both outcomes, not just a list of success codes — because a wrong rule
+> either refuses legitimate borrowers or approves unverified ones.
+>
+> Related: do sandbox/hackathon eVerify credentials query live PhilSys records at all, or
+> only a test dataset? If they cannot match a real ID, that changes what this integration
+> can demonstrate.
+
+**Why it blocks.** This is the strongest evidence in this file: a real ID, a real face, a
+live 200 response — not documentation, and not an assistant's assertion. It shows the
+documented response shape is wrong, and our match logic was built on that shape.
+
+**What we did with it:** nothing automatic. `FOJ3128` was **not** added to the accepted set,
+because "an identity was returned" is not the same as "the identity was verified", and
+guessing wrong in that direction approves an unverified borrower for credit. The check
+still refuses, pending an authoritative answer.
+
+**Note for the platform team:** your AI assistant previously answered that `AAA000` and
+`AAA001` are the only match codes, distinguished by input method. That is contradicted by
+this live response. It also supplied a worked HMAC example for eGovPAY whose digest does
+not reproduce (its own stated key and string give `6d727f54a7f935e8…`, not the
+`2023908815121b6d…` it claimed). Both cost us credits to discover.
 
 **Answer:**

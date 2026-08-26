@@ -97,7 +97,14 @@ function recordVerification(
    * These are belt-and-braces: a response that says "not verified" must never be read as a
    * match, whatever else it contains.
    */
-  const gradeFailed = typeof meta?.result_grade === "string" && meta.result_grade.toUpperCase().startsWith("FAILED");
+  /**
+   * `result_grade` is documented as a string ("FAILED_FACE") but a live response returned
+   * the number `1`. Only a string is treated as a failure signal — a number is a shape we
+   * do not understand, and guessing that some numeric value means failure could refuse a
+   * legitimate borrower. Unknown must not silently mean "no".
+   */
+  const gradeFailed =
+    typeof meta?.result_grade === "string" && meta.result_grade.toUpperCase().startsWith("FAILED");
   const codeMatched = !!data?.code && MATCHED_CODES.has(data.code);
   const matched = codeMatched && data?.verified !== false && !gradeFailed;
 
@@ -118,6 +125,24 @@ function recordVerification(
    */
   // eslint-disable-next-line no-console
   console.error(`[eVerify] verdict: matched=${matched}`, JSON.stringify(diagnostics));
+
+  /**
+   * TEMPORARY — REMOVE BEFORE SUBMISSION.
+   *
+   * Logs eVerify's ENTIRE response when a verdict is not matched. This contains personal
+   * data — full name, PhilSys reference, a photo URL — which is why it is server-side only
+   * (never returned to the client), fires only on the rejection path, and must not survive
+   * into anything handling other people's identities.
+   *
+   * It exists because eVerify's real response does not match its documentation: a
+   * confirmed-genuine ID and face returned `code: "FOJ3128"` (a format appearing in no
+   * documentation), `result_grade: 1` (numeric, where the docs show the string
+   * "FAILED_FACE"), and no `verified` field at all. We cannot design a correct match rule
+   * against a shape we have never seen in full, and each attempt to observe it costs a
+   * credit.
+   */
+  // eslint-disable-next-line no-console
+  if (!matched) console.error("[eVerify] RAW (temporary, contains PII):", JSON.stringify({ data, meta }));
 
   if (!matched || !data?.full_name) {
     return {
