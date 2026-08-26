@@ -36,25 +36,18 @@ async function getEverifyAccessToken(): Promise<string> {
 }
 
 /**
- * eVerify's matched-result codes.
+ * What the documentation claims each endpoint returns on success. **Not used to decide a
+ * match** — recorded in diagnostics so a response can be compared against the docs.
  *
- * Both are success codes. The portal's assistant said they differ by input method —
- * AAA000 for typed demographics, AAA001 for the QR path — and that claim was briefly
- * used to require exactly one code per endpoint. **That narrowing was a mistake and has
- * been reverted.**
+ * They were briefly load-bearing, on the portal assistant's word that AAA000 and AAA001
+ * are the only success codes. A live run with a genuine ID returned `FOJ3128`, which
+ * appears in no documentation, so the vocabulary is larger than described and enumerating
+ * success codes is not possible. The match rule in `recordVerification` therefore tests
+ * the SHAPE of the response, not the value of the code.
  *
- * The same assistant, in the same session, produced a worked HMAC example whose digest
- * does not reproduce: its stated key and string give 6d727f54…, not the 2023908815… it
- * claimed. Having demonstrably fabricated one answer, its unsupported claims cannot carry
- * a check that decides whether a real person is refused credit — and the failure is
- * silent, presenting as "eVerify could not match this person".
- *
- * So: accept either code, as the code did before. `expectedCode` is retained for
- * diagnostics only — it records what the assistant claimed this endpoint returns, so the
- * logs and the rejection payload show whether reality agrees. Narrow this only against an
- * observed live response, never against a third-party assertion.
+ * (The same assistant also supplied an eGovPAY HMAC example whose digest does not
+ * reproduce. Its unsupported claims are not evidence.)
  */
-const MATCHED_CODES = new Set(["AAA000", "AAA001"]);
 const MATCH_CODE_DEMOGRAPHIC = "AAA000";
 const MATCH_CODE_QR = "AAA001";
 
@@ -98,24 +91,55 @@ function recordVerification(
    * match, whatever else it contains.
    */
   /**
-   * `result_grade` is documented as a string ("FAILED_FACE") but a live response returned
-   * the number `1`. Only a string is treated as a failure signal — a number is a shape we
-   * do not understand, and guessing that some numeric value means failure could refuse a
-   * legitimate borrower. Unknown must not silently mean "no".
+   * The match rule, derived from two live observations rather than the documentation —
+   * which we now know is wrong about this response in at least three ways.
+   *
+   *                        mismatch (other person's ID)   match (own ID + own face)
+   *   data.code            absent                         "FOJ3128"
+   *   data.verified        false                          absent
+   *   meta.result_grade    0                              1
+   *   identity data        none                           full PhilSys record
+   *
+   * All four clauses must hold. Each is a positive requirement, so a missing or
+   * unrecognised field yields false and an unfamiliar response fails closed.
+   *
+   * Clause 3 checks that a code was returned AT ALL, not which one. `FOJ3128` proves the
+   * code vocabulary is larger than documented, so enumerating success codes is not
+   * possible — but presence cleanly separates the two observations, and generalises in a
+   * way that allowlisting a magic string would not.
+   *
+   * THE LOAD-BEARING ASSUMPTION, stated so it is not forgotten: clauses 3 and 4 treat
+   * "identity data came back" as evidence of verification. That rests on one positive and
+   * one negative observation. If eVerify ever returns a record on a PARTIAL match — right
+   * person located, face did not match — this would approve it. Clauses 1 and 2 are the
+   * independent hedge against exactly that: a partial match that sets `verified: false` or
+   * a failing grade is still refused even though 3 and 4 would pass.
+   *
+   * Revisit against Q14's answer. Do not loosen any clause without a live observation.
    */
-  const gradeFailed =
-    typeof meta?.result_grade === "string" && meta.result_grade.toUpperCase().startsWith("FAILED");
-  const codeMatched = !!data?.code && MATCHED_CODES.has(data.code);
-  const matched = codeMatched && data?.verified !== false && !gradeFailed;
+  const notExplicitlyUnverified = data?.verified !== false; // 1
+  const gradeOk = // 2
+    meta?.result_grade === undefined || meta?.result_grade === null
+      ? true
+      : typeof meta.result_grade === "string"
+        ? !meta.result_grade.toUpperCase().startsWith("FAILED")
+        : typeof meta.result_grade === "number"
+          ? meta.result_grade >= 1 // 0 observed on a genuine mismatch — treated as a hard fail
+          : false; // any other type is a shape we do not understand
+  const hasCode = typeof data?.code === "string" && data.code.trim().length > 0; // 3
+  const hasName = typeof data?.full_name === "string" && data.full_name.trim().length > 0; // 4
+
+  const matched = notExplicitlyUnverified && gradeOk && hasCode && hasName;
 
   /** Status values only — never the identity. `full_name` is personal data, so only its presence. */
   const diagnostics = {
     code: data?.code ?? null,
     codeExpectedByDocs: expectedCode,
-    codeAccepted: codeMatched,
+    /** Which clause refused it — so a rejection says why, not just that it happened. */
+    clauses: { notExplicitlyUnverified, gradeOk, hasCode, hasName },
     verified: data?.verified ?? null,
     resultGrade: meta?.result_grade ?? null,
-    hasName: !!data?.full_name,
+    hasName,
   };
 
   /**
@@ -250,6 +274,50 @@ router.post("/verify-borrower/personal", expensiveRateLimit, async (req, res) =>
     sendUpstreamError(res, err, "Borrower verification");
   }
 });
+
+/**
+ * Test-only: mint a verification record for a fictional borrower.
+ *
+ * Registered only when ALLOW_TEST_VERIFICATION === "true" — with the flag off this route
+ * does not exist, and returns 404 like any other unknown path. It is not linked from the
+ * UI; it is reachable only by calling it deliberately.
+ *
+ * Why it exists: every downstream step — the OTP, loan creation, the agreement PDF,
+ * the eMessage send — sits behind a real eVerify match, which costs a credit and requires
+ * a physical ID and a live face each time. Testing the OTP copy or a PDF layout should not
+ * cost either.
+ *
+ * The identity is deliberately, unmistakably fake. It must never resemble a real person:
+ * anything plausible could end up in a screenshot or a demo and be taken for a real
+ * PhilSys record.
+ *
+ * It writes into the SAME `verifiedBorrowers` store the real path uses, so the loan route
+ * needs no test-awareness and there is no second code path to keep in sync — the thing
+ * being tested is the real one.
+ */
+if (config.allowTestVerification) {
+  router.post("/dev/seed-verification", (req, res) => {
+    const verificationId = randomUUID();
+    verifiedBorrowers.set(verificationId, {
+      ownerId: req.ownerId!,
+      borrowerName: "TEST BORROWER — NOT A REAL PERSON",
+      borrowerEgovphUniqid: "TEST-UNIQID-0000000000",
+      borrowerPhilsysNumber: "0000-0000-0000-0000",
+      livenessSessionId: "test-no-liveness-performed",
+      expiresAtMs: Date.now() + VERIFICATION_TTL_MS,
+    });
+
+    // eslint-disable-next-line no-console
+    console.warn(`[dev] seeded TEST verification ${verificationId} for owner ${req.ownerId} — no identity was verified`);
+
+    res.status(201).json({
+      matched: true,
+      verificationId,
+      borrowerName: "TEST BORROWER — NOT A REAL PERSON",
+      warning: "Test verification. No identity was checked. This route is disabled unless ALLOW_TEST_VERIFICATION=true.",
+    });
+  });
+}
 
 function buildTermsOfPayment(principal: number, borrowerName: string, dueDateIso: string): string {
   const dueDate = new Date(dueDateIso);

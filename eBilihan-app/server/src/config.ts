@@ -63,6 +63,21 @@ export const config = {
     settlementTemplateUuid: process.env.EGOVPAY_SETTLEMENT_TEMPLATE_UUID ?? "",
   },
 
+  /**
+   * Opt-in test affordances. **Must be off in production**, and are: this reads true only
+   * when ALLOW_TEST_VERIFICATION is exactly "true", so an unset or misspelled value is
+   * disabled rather than enabled.
+   *
+   * Currently gates POST /loans/dev/seed-verification, which mints a verification record
+   * for an obviously fictional borrower so the downstream flow — OTP, loan creation, the
+   * agreement PDF, eMessage — can be exercised repeatedly without a real ID, a real face,
+   * and a credit per attempt.
+   *
+   * It does NOT weaken the real path: nothing about `recordVerification` changes, and with
+   * the flag off the route does not exist at all.
+   */
+  allowTestVerification: process.env.ALLOW_TEST_VERIFICATION === "true",
+
   loans: {
     /**
      * Loans at or above this amount (PHP) require the STORE OWNER to pass a standalone
