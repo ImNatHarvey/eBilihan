@@ -36,15 +36,25 @@ async function getEverifyAccessToken(): Promise<string> {
 }
 
 /**
- * eVerify's matched-result codes, per the portal's own answer: both mean a successful
- * biometric + demographic match, and they differ only by how the demographics arrived.
+ * eVerify's matched-result codes.
  *
- *   AAA000 — POST /api/query      (typed demographics)
- *   AAA001 — POST /api/query/qr   (demographics read from the National ID QR)
+ * Both are success codes. The portal's assistant said they differ by input method —
+ * AAA000 for typed demographics, AAA001 for the QR path — and that claim was briefly
+ * used to require exactly one code per endpoint. **That narrowing was a mistake and has
+ * been reverted.**
  *
- * Each endpoint therefore expects exactly one of them, which is why the code is passed in
- * per call rather than checked against a shared set.
+ * The same assistant, in the same session, produced a worked HMAC example whose digest
+ * does not reproduce: its stated key and string give 6d727f54…, not the 2023908815… it
+ * claimed. Having demonstrably fabricated one answer, its unsupported claims cannot carry
+ * a check that decides whether a real person is refused credit — and the failure is
+ * silent, presenting as "eVerify could not match this person".
+ *
+ * So: accept either code, as the code did before. `expectedCode` is retained for
+ * diagnostics only — it records what the assistant claimed this endpoint returns, so the
+ * logs and the rejection payload show whether reality agrees. Narrow this only against an
+ * observed live response, never against a third-party assertion.
  */
+const MATCHED_CODES = new Set(["AAA000", "AAA001"]);
 const MATCH_CODE_DEMOGRAPHIC = "AAA000";
 const MATCH_CODE_QR = "AAA001";
 
@@ -88,21 +98,26 @@ function recordVerification(
    * match, whatever else it contains.
    */
   const gradeFailed = typeof meta?.result_grade === "string" && meta.result_grade.toUpperCase().startsWith("FAILED");
-  const matched = data?.code === expectedCode && data?.verified !== false && !gradeFailed;
+  const codeMatched = !!data?.code && MATCHED_CODES.has(data.code);
+  const matched = codeMatched && data?.verified !== false && !gradeFailed;
+
+  /** Status values only — never the identity. `full_name` is personal data, so only its presence. */
+  const diagnostics = {
+    code: data?.code ?? null,
+    codeExpectedByDocs: expectedCode,
+    codeAccepted: codeMatched,
+    verified: data?.verified ?? null,
+    resultGrade: meta?.result_grade ?? null,
+    hasName: !!data?.full_name,
+  };
 
   /**
-   * Log the verdict inputs — never the identity.
-   *
-   * `sendUpstreamError` only fires on a non-2xx, so a successful eVerify call that simply
-   * did not match left no trace at all: the response body was never recorded anywhere, and
-   * re-running the flow to see it costs a credit. `code` and `result_grade` are status
-   * values, not personal data; `full_name` is, so only its presence is recorded.
+   * `console.error`, not `console.info` — Render did not surface info-level output, and a
+   * verdict we cannot see is exactly the one worth seeing. This is not an error condition;
+   * it is written to stderr because that is the stream that reliably reaches the log viewer.
    */
   // eslint-disable-next-line no-console
-  console.info(
-    `[eVerify] verdict: matched=${matched} code=${data?.code ?? "none"} expected=${expectedCode} ` +
-      `verified=${data?.verified ?? "absent"} grade=${meta?.result_grade ?? "none"} hasName=${!!data?.full_name}`,
-  );
+  console.error(`[eVerify] verdict: matched=${matched}`, JSON.stringify(diagnostics));
 
   if (!matched || !data?.full_name) {
     return {
@@ -111,6 +126,15 @@ function recordVerification(
       // It is deliberately distinct from a liveness check that never completed, which
       // never reaches this function at all.
       reason: "eVerify could not match this person to the presented identity.",
+      /**
+       * Returned so a rejection can be diagnosed from the browser's Network tab without
+       * re-running the flow, which costs a credit every time. Only on the rejection path,
+       * and only status values — no name, no PhilSys reference, no photo URL.
+       *
+       * Remove or gate behind an env flag before this is anything other than a hackathon
+       * build: it exposes upstream response detail to any authenticated client.
+       */
+      diagnostics,
     };
   }
 

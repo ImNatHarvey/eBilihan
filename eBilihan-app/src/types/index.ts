@@ -98,7 +98,23 @@ export type Loan = {
  */
 export type BorrowerVerification =
   | { matched: true; verificationId: string; borrowerName: string }
-  | { matched: false; reason: string };
+  | {
+      matched: false;
+      reason: string;
+      /**
+       * Status values from eVerify's response, returned on rejection only so a refusal can
+       * be diagnosed from the Network tab without re-running the flow at a credit a time.
+       * No personal data. See recordVerification in server/src/routes/loans.ts.
+       */
+      diagnostics?: {
+        code: string | null;
+        codeExpectedByDocs: string;
+        codeAccepted: boolean;
+        verified: boolean | null;
+        resultGrade: string | null;
+        hasName: boolean;
+      };
+    };
 
 /**
  * Server-side decision on a standalone Face Liveness session. The 95.0 threshold is
