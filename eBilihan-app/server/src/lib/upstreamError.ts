@@ -83,9 +83,20 @@ export function describeUpstreamError(err: unknown, label: string): UpstreamFail
 /** Convenience wrapper: `return sendUpstreamError(res, err, "Borrower verification")`. */
 export function sendUpstreamError(res: Response, err: unknown, label: string) {
   const { status, body } = describeUpstreamError(err, label);
-  if (body.kind === "quota_exceeded") {
-    // eslint-disable-next-line no-console
-    console.error(`[eGov] quota exhausted during: ${label}`);
-  }
+  const upstreamStatus = (err as UpstreamError).response?.status;
+
+  /**
+   * Log EVERY upstream failure with the gateway's own response body, not just quota
+   * errors. These calls cost portal credits, so a failure that loses its body costs real
+   * money to reproduce — and client-side tooling drops it easily (PowerShell 5.1 throws
+   * on non-2xx and the response stream is often already consumed by the time you read it).
+   * The server is the one place the body is guaranteed to be seen once.
+   */
+  // eslint-disable-next-line no-console
+  console.error(
+    `[eGov] ${label} — upstream HTTP ${upstreamStatus ?? "no response"} → returning ${status} (${body.kind}):`,
+    JSON.stringify(body.detail),
+  );
+
   return res.status(status).json(body);
 }

@@ -100,6 +100,13 @@ identities. eGovPH does. A citizen reaches the app already authenticated, one of
 2. **Login as eGov widget.** eGovPH's own widget renders on the sign-in screen and runs
    its mobile/email → OTP → eGov PIN flow, then hands back an `exchange_code`.
 
+> **On the widget's appearance:** its OTP and PIN screens render in eGovPH's own styling
+> rather than eBilihan's — the widget exposes no documented theme or appearance option
+> (`target`, `partnerCode`, `host`, `partnerName` are the whole documented surface). We
+> deliberately do not override it: the script URL is version-pinned per eGovPH's own
+> instruction, and CSS hacks against a third-party government component would break on
+> their next release.
+
 Either way the backend redeems that single-use code
 (`POST /api/token` → `POST /api/partner/sso_authentication`) and issues an eBilihan
 session. First-time citizens are auto-registered from their eGovPH profile and complete a

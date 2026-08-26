@@ -102,8 +102,15 @@ export function LoginPage() {
                   <Loader2 className="animate-spin" /> Loading eGovPH sign-in...
                 </Button>
               )}
-              {/* eGovPH's own widget renders here — mobile/email, OTP, then eGov PIN. */}
-              <div id="egov-login" ref={mountRef} />
+              {/*
+                eGovPH's own widget renders here — mobile/email, OTP, then eGov PIN.
+                `flex justify-center` centers whatever it draws inside OUR container; the
+                widget's own markup and styling are left alone. It ships with no documented
+                theme option, so it renders in eGovPH's styling rather than ours — see the
+                README. Don't override its internals: the script URL is version-pinned and
+                CSS hacks against it would break on their next release.
+              */}
+              <div id="egov-login" ref={mountRef} className="flex justify-center" />
             </>
           )}
 

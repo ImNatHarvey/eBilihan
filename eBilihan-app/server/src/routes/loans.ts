@@ -35,24 +35,29 @@ async function getEverifyAccessToken(): Promise<string> {
 }
 
 /**
- * eVerify's matched-result codes.
+ * eVerify's matched-result codes, per the portal's own answer: both mean a successful
+ * biometric + demographic match, and they differ only by how the demographics arrived.
  *
- * NARROW-ME: confirm the authoritative code list via the portal AI assistant, then reduce
- * this to the single correct value. Both are accepted today only because the docs'
- * own examples disagree — QR Verify's "Success (Matched)" shows "AAA001" while Verify
- * Personal Information's success shows "AAA000" — and guessing wrong would silently block
- * every legitimate loan. If it turns out one of these means "matched with low confidence",
- * we are currently approving loans we should refuse.
+ *   AAA000 — POST /api/query      (typed demographics)
+ *   AAA001 — POST /api/query/qr   (demographics read from the National ID QR)
+ *
+ * Each endpoint therefore expects exactly one of them, which is why the code is passed in
+ * per call rather than checked against a shared set.
  */
-const MATCHED_CODES = new Set(["AAA000", "AAA001"]);
+const MATCH_CODE_DEMOGRAPHIC = "AAA000";
+const MATCH_CODE_QR = "AAA001";
 
 type EverifyMatch = {
   code?: string;
   full_name?: string;
   reference?: string;
   token?: string;
+  verified?: boolean;
   [key: string]: unknown;
 };
+
+/** `meta` on a verify response — carries the grade when a check fails rather than errors. */
+type EverifyMeta = { tier_level?: string; result_grade?: string; [key: string]: unknown };
 
 /**
  * Turns an eVerify response into a verdict AND, when matched, a server-held record the
@@ -62,10 +67,28 @@ type EverifyMatch = {
 function recordVerification(
   ownerId: string,
   data: EverifyMatch | undefined,
+  meta: EverifyMeta | undefined,
+  expectedCode: string,
   livenessSessionId: string,
   fallbackIdentifier: string,
 ) {
-  const matched = !!data?.code && MATCHED_CODES.has(data.code);
+  /**
+   * Three independent ways to be "not matched", all of which must block the loan:
+   *
+   *  1. The code isn't the one this endpoint returns on success.
+   *  2. `verified` is explicitly false.
+   *  3. `meta.result_grade` reports a failure (e.g. "FAILED_FACE").
+   *
+   * (2) and (3) matter because a face mismatch does NOT come back as a different code —
+   * it comes back with no `code` field at all:
+   *   {"data":{"verified":false},"meta":{"tier_level":"Tier II","result_grade":"FAILED_FACE"}}
+   * The code check alone already fails closed on that, since `undefined !== expectedCode`.
+   * These are belt-and-braces: a response that says "not verified" must never be read as a
+   * match, whatever else it contains.
+   */
+  const gradeFailed = typeof meta?.result_grade === "string" && meta.result_grade.toUpperCase().startsWith("FAILED");
+  const matched = data?.code === expectedCode && data?.verified !== false && !gradeFailed;
+
   if (!matched || !data?.full_name) {
     return {
       matched: false as const,
@@ -106,7 +129,16 @@ router.post("/verify-borrower", async (req, res) => {
       { value: qrValue, face_liveness_session_id: faceLivenessSessionId },
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
-    res.json(recordVerification(req.ownerId!, response.data?.data, faceLivenessSessionId, qrValue));
+    res.json(
+      recordVerification(
+        req.ownerId!,
+        response.data?.data,
+        response.data?.meta,
+        MATCH_CODE_QR,
+        faceLivenessSessionId,
+        qrValue,
+      ),
+    );
   } catch (err) {
     sendUpstreamError(res, err, "Borrower verification");
   }
@@ -144,7 +176,16 @@ router.post("/verify-borrower/personal", async (req, res) => {
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
     const identifier = `${lastName.toUpperCase()}-${birthDate}`;
-    res.json(recordVerification(req.ownerId!, response.data?.data, faceLivenessSessionId, identifier));
+    res.json(
+      recordVerification(
+        req.ownerId!,
+        response.data?.data,
+        response.data?.meta,
+        MATCH_CODE_DEMOGRAPHIC,
+        faceLivenessSessionId,
+        identifier,
+      ),
+    );
   } catch (err) {
     sendUpstreamError(res, err, "Borrower verification");
   }

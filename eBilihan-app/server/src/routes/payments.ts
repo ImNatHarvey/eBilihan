@@ -9,9 +9,27 @@ import { appendTransaction } from "../lib/egovchain.js";
 
 const router = Router();
 
-/** eGovPay > Generate Payment: digest = hash_hmac('sha256', "$amount|$txnid", $token). */
+/**
+ * eGovPay > Generate Payment: digest = hash_hmac('sha256', "$amount|$txnid", $token).
+ *
+ * Two details the formula alone does not pin down, both established the hard way:
+ *
+ *  - **The key is the full header value, `test_` prefix included.** Signing with the
+ *    prefixed token is what got us past `401 invalid_api_header` to a digest-only fault,
+ *    which proves the gateway accepted it.
+ *  - **The amount is normalised to 4 decimal places.** The docs interpolate `$amount`
+ *    literally, which reads as `"120"`, but eGovPay's own Check Transaction response
+ *    renders amounts as `"1000.0000"` — and signing `"120|<txnid>"` was rejected with
+ *    `{"errors":{"digest":["The digest is not valid."]}}` while every other field
+ *    validated.
+ *
+ * Output is lowercase hex: the documented sample digest is 64 lowercase hex characters,
+ * which is PHP `hash_hmac`'s default.
+ */
 function computeDigest(amount: number, txnid: string): string {
-  return createHmac("sha256", config.egovpay.apiToken).update(`${amount}|${txnid}`).digest("hex");
+  return createHmac("sha256", config.egovpay.apiToken)
+    .update(`${amount.toFixed(4)}|${txnid}`)
+    .digest("hex");
 }
 
 /** Asks eGovPay what actually happened. This is the only thing that settles an order. */

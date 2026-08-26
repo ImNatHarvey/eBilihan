@@ -84,8 +84,15 @@ router.post("/", async (req, res) => {
     longitude?: string;
   };
 
-  const gender = owner.gender || body.gender;
-  if (!gender) return res.status(422).json({ error: "gender is required" });
+  /**
+   * eGov SSO returns gender lowercase ("male"); eReport's own examples are capitalised
+   * ("Male"). Normalising here rather than forwarding raw, because a casing mismatch would
+   * only surface as a rejected complaint — and eReport has no sandbox, so discovering it
+   * would mean a failed real filing.
+   */
+  const rawGender = owner.gender || body.gender;
+  if (!rawGender) return res.status(422).json({ error: "gender is required" });
+  const gender = rawGender.charAt(0).toUpperCase() + rawGender.slice(1).toLowerCase();
   if (!body.reportType || !body.subject || !body.message) {
     return res.status(422).json({ error: "reportType, subject, and message are required" });
   }

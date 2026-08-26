@@ -12,7 +12,26 @@ import "./index.css";
 import App from "./App.tsx";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      /**
+       * 5 minutes, not 30 seconds.
+       *
+       * TanStack refetches on window focus by default, so `staleTime` is really "how
+       * often does alt-tabbing back cost a round trip". At 30s that was every single
+       * return to the tab. For eBilihan's own endpoints that was merely wasteful; for
+       * the eReport dataset lookups it burned a portal credit per call, unattended,
+       * with nobody clicking anything.
+       *
+       * Focus refetching stays ON deliberately — stock counts and order status SHOULD
+       * refresh when you come back to the tab, and those endpoints are ours and free.
+       * The billed eGov lookups opt out individually instead: see EGOV_REFERENCE_QUERY
+       * in src/api/reports.ts.
+       */
+      staleTime: 5 * 60_000,
+    },
+  },
 });
 
 createRoot(document.getElementById("root")!).render(

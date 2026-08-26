@@ -11,6 +11,7 @@ import { OtpInput } from "@/components/ui/otp-input";
 import { ReportLocationPicker, type ReportLocation } from "./ReportLocationPicker";
 import {
   submitComplaint,
+  EGOV_REFERENCE_QUERY,
   listReportTypes,
   requestReportOtp,
   confirmReportOtp,
@@ -29,7 +30,11 @@ const SELECT_CLASS =
 /** §6 — eReport ticketing. UI structure ported from the ebilihan-hackathon prototype's ReportPage. */
 export function ReportsPage() {
   const owner = useAuthStore((s) => s.owner);
-  const { data: categories = [] } = useQuery({ queryKey: ["ereport-report-types"], queryFn: listReportTypes });
+  const { data: categories = [] } = useQuery({
+    queryKey: ["ereport-report-types"],
+    queryFn: listReportTypes,
+    ...EGOV_REFERENCE_QUERY,
+  });
 
   const [category, setCategory] = useState("");
   const [subject, setSubject] = useState("");

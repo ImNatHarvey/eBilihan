@@ -2,6 +2,30 @@ import { api } from "./client";
 import type { PsgcItem } from "@/types";
 
 /**
+ * Query options for eReport's reference lookups — report types and the
+ * region/province/municipality/barangay cascade.
+ *
+ * **Every one of these costs a portal credit.** They are also reference data that changes
+ * about once a year, so refetching them is pure waste. Spread these options into any
+ * useQuery that calls an eReport dataset endpoint.
+ *
+ * This exists because of a real incident: with the global `staleTime` at 30s and
+ * TanStack's default `refetchOnWindowFocus`, sitting on the Reports page and alt-tabbing
+ * back re-fetched report types AND regions every time — roughly 2 credits per return to
+ * the tab, unattended. On a deployed site that is ~2 credits per visitor per minute, which
+ * would drain the account during judging.
+ *
+ * Fetch once per session, then never again.
+ */
+export const EGOV_REFERENCE_QUERY = {
+  staleTime: Infinity,
+  gcTime: Infinity,
+  refetchOnWindowFocus: false,
+  refetchOnMount: false,
+  refetchOnReconnect: false,
+} as const;
+
+/**
  * eReport's OWN region/province/municipality/barangay codes — NOT PSGC Cloud's (see
  * src/api/locations.ts / components/shared/LocationPicker.tsx, used elsewhere for
  * registration). submit_complaint rejects PSGC Cloud codes outright; confirmed live

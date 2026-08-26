@@ -1,11 +1,11 @@
 # Portal AI Assistant — Questions to Ask
 
-Eleven questions for the DICT API Developer Portal's embedded AI assistant, which is trained
+Thirteen questions for the DICT API Developer Portal's embedded AI assistant, which is trained
 on the API directory. Each is written to be pasted verbatim.
 
-**Two are blocking.** Q1 and Q2 each change code that currently ships on an assumption. The
-rest close gaps where this project is inferring rather than reading, and none of them blocks
-work.
+**Five are blocking** — Q1, Q2 (including Q2e), Q3, Q12 and Q13. Each changes code, an estimate,
+or whether a path can be exercised at all. The rest close gaps where this project is
+inferring rather than reading.
 
 Paste answers back into this file under each question as you get them.
 
@@ -13,7 +13,7 @@ Paste answers back into this file under each question as you get them.
 |---|---|---|---|
 | 1 | eVerify match codes | **YES** | `server/src/routes/loans.ts:33` (`MATCHED_CODES`) |
 | 2 | eGovPay TEST mode + callback payload | **YES** | `server/src/routes/payments.ts`; whether a settled sale is demonstrable |
-| 3 | Billing per endpoint | no | The credit request to the organisers |
+| 3 | Billing per endpoint | **YES** | Every cost estimate we have; which calls to avoid in the UI |
 | 4 | SSO base URL registration | no | Deployment sequencing |
 | 5 | eMessage delivery restrictions | no | Diagnosis only |
 | 6 | Credential field names | no | `CREDENTIALS_GUIDE.md`; unblocks `EVERIFY_PUBKEY` |
@@ -22,6 +22,8 @@ Paste answers back into this file under each question as you get them.
 | 9 | SSO profile completeness | no | Whether the eReport gender fallback can be dropped |
 | 10 | Exchange code lifetime | no | Docs only |
 | 11 | Liveness session reuse | no | Whether one check can serve two calls |
+| 12 | Exchange-code partner binding | **YES** | Whether the portal's test tool can validate our credentials at all |
+| 13 | eReport test mode for submit_complaint | **YES** | Whether the eReport write path can be exercised at all |
 
 ---
 
@@ -78,9 +80,47 @@ payload. Answering (b) tells us what to *log*, not what to *believe*.
 
 **Answer:**
 
+### Q2e — the `digest` input · **BLOCKING, and currently the single thing stopping eGovPay**
+
+> For eGovPAY **Generate Payment**, I need the exact input to the `digest` HMAC, because
+> `hash_hmac('sha256', "$amount|$txnid", $token)` is ambiguous on three points and my
+> requests are being rejected with
+> `{"errors":{"digest":["The digest is not valid."]}}`:
+>
+> **(1) The key.** My header is `X-eGovPay-Token: test_<32-char-key>` and it authenticates
+> successfully. For the digest, is `$token` the **full header value including the `test_`
+> prefix**, or **only the 32-character key without it**? Please state which explicitly —
+> answering "it is your API token" does not distinguish these two and will not help me.
+>
+> **(2) The amount.** For an amount of `120`, is the signed string `"120|MYTXNID"`, or is
+> the amount normalised first — `"120.00|MYTXNID"` or `"120.0000|MYTXNID"`? Your Check
+> Transaction response returns amounts as `"1000.0000"`, so normalisation is plausible.
+>
+> **(3) A worked example.** Please give one complete example where the key is stated in
+> full: a key value, an amount, a txnid, the exact string that gets signed, and the
+> resulting digest — so I can reproduce it locally and verify my implementation before
+> spending more credits. The example in your documentation
+> (`amount: 1000`, `txnid: "TESTREF123"`,
+> `digest: "c5989a520055e65025a695bb1483b30b6cd7923c79c648fff5e757bbabc62fa2"`) cannot be
+> reproduced because the key used to produce it is not published.
+
+**Why it blocks.** Everything else about our Generate Payment request is confirmed valid —
+the gateway faulted **only** `digest`, which means `settlement_template_uuid`,
+`redirect_url`, `callback_url`, `items`, `amount`, `txnid`, `currency`, `expires_at` and
+`link_expires_at` all passed validation, and the `test_`-prefixed token authenticates.
+eGovPay is one field away from working.
+
+**Already eliminated locally, at zero cost:** the output encoding. The documented digest is
+64 lowercase hex characters — PHP's `hash_hmac` default — and that is what we send. Also
+tried and failed: 234 combinations of 13 candidate keys × 6 message forms × 3 encodings
+against the documented example. None reproduce it, which is expected if it was signed with
+an unpublished merchant token.
+
+**Answer:**
+
 ---
 
-## Q3 — Billing per endpoint
+## Q3 — Billing per endpoint · **BLOCKING**
 
 > Which endpoints consume credits, for each of the six APIs (eGov SSO, NationalID eVerify,
 > eMessage, eGovPAY, eReport, Face Liveness)? Your eGov SSO guide says
@@ -201,5 +241,71 @@ fallback can go. `mobile` matters too — the loan confirmation OTP has nowhere 
 **Why.** If a session can serve two calls, a borrower whose QR verification fails could retry
 via the demographic path without a second face capture — one less thing to ask of someone
 standing at a sari-sari store counter.
+
+**Also ask, same topic:** for the **standalone Face Liveness** API, how long does a session
+token from `POST /v1/liveness/session` stay valid before the capture must be completed, and
+how long afterwards can `GET /v1/liveness/result/{token}` still be called? We create sessions
+on one machine and may complete the capture on another (no webcam on the dev PC), so the
+window matters.
+
+**Answer:**
+
+---
+
+## Q12 — Exchange-code partner binding · **BLOCKING** *(documentation contradiction)*
+
+> On the eGov SSO catalog page, can an `exchange_code` produced by the **Generate exchange
+> code** button be redeemed at `POST /api/token` using **my own** `partner_code` and
+> `partner_secret` — or can it only be redeemed by the platform's own partner? Your guide
+> says the button *"mints a fresh, single-use `exchange_code` for that account, which you feed
+> straight into step 3"* (step 3 uses my `partner_code` / `partner_secret`), but the tool
+> itself says it mints the code *"against this platform's own eGov partner using a test
+> identity"*. Those read as contradictory. Redeeming such a code with my own credentials
+> returns `403 forbidden` — `"You don't have permission to access this resource."` Is that
+> expected, and if so what is the supported way to test `POST /api/token` end to end?
+
+**Why it blocks.** It decides whether the portal's own test tool can validate a third-party
+integration at all, or whether the widget is the only path.
+
+**Established from live testing, 0 credits:**
+
+- `check_access` → `{"ok":true}`. Our `partner_code` is valid and the account is approved.
+- `POST /api/token`, real credentials + deliberately invalid code (`"not-a-real-code-000"`)
+  → **`422`**, upstream faulting only that field:
+  `{"message":"Invalid exchange_code","errors":{"exchange_code":["Invalid exchange_code"]}}`.
+  Per the documented split (`403` = bad credentials, `422` = bad code), this proves
+  **`partner_code` and `partner_secret` are both accepted**.
+- A real, freshly-minted code from **Generate exchange code**, same credentials → **`403
+  forbidden`** at the token step.
+
+Credentials that pass, a `422` on garbage, but a `403` on a portal-minted code, points at the
+code being bound to a partner that isn't ours. If that is confirmed, the documentation should
+not say to feed its output into step 3.
+
+**Answer:**
+
+---
+
+## Q13 — eReport test mode for `submit_complaint` · **BLOCKING**
+
+> For the eReport API: is there a test or sandbox mode for `POST /api/integration/submit_complaint`
+> that lets me exercise the write path **without filing a real complaint into the live triage
+> queue**? Specifically: is there a test flag or header, a designated test `report_type`, a
+> separate sandbox base URL, or a test account whose submissions are routed away from real
+> case handlers? If a complaint is submitted for integration testing, how do I withdraw or
+> cancel it, and who should be notified?
+>
+> I do not want to file a fabricated report to obtain a case number. If there is no test
+> mode, I will leave this endpoint unexercised rather than submit a false report.
+
+**Why it blocks.** `submit_complaint` is the only eReport endpoint we have not called, and
+it is the one that matters — it is the write path. But it files a genuine complaint with
+real authorities. Choosing a low-stakes `report_type` does not change that: a fabricated
+report still enters a live queue and consumes a real person's attention, and a disclaimer in
+the message body is not consent from whoever triages it.
+
+**If the answer is no:** eReport's write path stays documented as *"implemented against the
+documented contract, not exercised"*, and the README and video say exactly that. An honest
+gap is preferable to a case number obtained by filing something untrue.
 
 **Answer:**

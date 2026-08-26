@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Label } from "@/components/ui/label";
-import { listReportRegions, listReportProvinces, listReportMunicipalities, listReportBarangays } from "@/api/reports";
+import {
+  listReportRegions,
+  listReportProvinces,
+  listReportMunicipalities,
+  listReportBarangays,
+  EGOV_REFERENCE_QUERY,
+} from "@/api/reports";
 import type { PsgcItem } from "@/types";
 
 export type ReportLocation = {
@@ -65,21 +71,31 @@ export function ReportLocationPicker({ value, onChange }: Props) {
   const [province, setProvince] = useState<PsgcItem | null>(null);
   const [municipality, setMunicipality] = useState<PsgcItem | null>(null);
 
-  const { data: regions = [] } = useQuery({ queryKey: ["ereport-regions"], queryFn: listReportRegions });
+  // All four levels are billed eGov lookups, so all four opt out of refetching —
+  // see EGOV_REFERENCE_QUERY. The `enabled` guards stop them firing before a parent is
+  // chosen; the spread stops them re-firing every time the tab regains focus afterwards.
+  const { data: regions = [] } = useQuery({
+    queryKey: ["ereport-regions"],
+    queryFn: listReportRegions,
+    ...EGOV_REFERENCE_QUERY,
+  });
   const { data: provinces = [] } = useQuery({
     queryKey: ["ereport-provinces", region?.code],
     queryFn: () => listReportProvinces(region!.code),
     enabled: !!region,
+    ...EGOV_REFERENCE_QUERY,
   });
   const { data: municipalities = [] } = useQuery({
     queryKey: ["ereport-municipalities", province?.code],
     queryFn: () => listReportMunicipalities(province!.code),
     enabled: !!province,
+    ...EGOV_REFERENCE_QUERY,
   });
   const { data: barangays = [] } = useQuery({
     queryKey: ["ereport-barangays", municipality?.code],
     queryFn: () => listReportBarangays(municipality!.code),
     enabled: !!municipality,
+    ...EGOV_REFERENCE_QUERY,
   });
 
   /** Barangay is optional — Region+Province+Municipality alone is enough to submit (see LocationPicker.tsx for the same reasoning). */

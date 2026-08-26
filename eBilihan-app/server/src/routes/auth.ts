@@ -44,22 +44,48 @@ export type EgovphProfile = {
  * either from eGovPH opening our own SSO base URL with ?exchange_code=... appended, or
  * from the Login as eGov widget's onSuccess callback. Both funnel into POST /sso/login.
  */
-async function resolveEgovphProfile(exchangeCode: string): Promise<EgovphProfile> {
-  const tokenRes = await egovphClient.post("/api/token", {
-    exchange_code: exchangeCode,
-    scope: "SSO_AUTHENTICATION",
-    partner_code: config.egovph.partnerCode,
-    partner_secret: config.egovph.partnerSecret,
-  });
-  const accessToken = tokenRes.data.access_token as string;
-  if (!accessToken) throw new Error("eGov SSO returned no access_token");
+/**
+ * Which of the two upstream calls failed. Without this an identical 403 could mean either
+ * "our partner credentials were rejected" (token step) or "the access token was refused"
+ * (profile step) — and those have completely different causes. Only the token step sends
+ * partner_secret; only the profile step costs a credit.
+ */
+export type SsoStep = "token" | "profile";
 
-  const profileRes = await egovphClient.post(
-    "/api/partner/sso_authentication",
-    {},
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
-  return profileRes.data.data as EgovphProfile;
+function tagStep(err: unknown, step: SsoStep): never {
+  (err as { ssoStep?: SsoStep }).ssoStep = step;
+  const status = (err as { response?: { status?: number } }).response?.status;
+  // eslint-disable-next-line no-console
+  console.error(`[eGov SSO] ${step} step failed: HTTP ${status ?? "no response"} —`,
+    JSON.stringify((err as { response?: { data?: unknown } }).response?.data ?? (err as Error).message));
+  throw err;
+}
+
+async function resolveEgovphProfile(exchangeCode: string): Promise<EgovphProfile> {
+  let accessToken: string;
+  try {
+    const tokenRes = await egovphClient.post("/api/token", {
+      exchange_code: exchangeCode,
+      scope: "SSO_AUTHENTICATION",
+      partner_code: config.egovph.partnerCode,
+      partner_secret: config.egovph.partnerSecret,
+    });
+    accessToken = tokenRes.data.access_token as string;
+  } catch (err) {
+    tagStep(err, "token");
+  }
+  if (!accessToken!) throw new Error("eGov SSO returned no access_token");
+
+  try {
+    const profileRes = await egovphClient.post(
+      "/api/partner/sso_authentication",
+      {},
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    return profileRes.data.data as EgovphProfile;
+  } catch (err) {
+    tagStep(err, "profile");
+  }
 }
 
 function fullNameOf(profile: EgovphProfile): string {
@@ -145,11 +171,18 @@ router.post("/sso/login", async (req, res) => {
     // remaining) all mean very different things to whoever is debugging the demo.
     const status = (err as { response?: { status?: number } }).response?.status;
     const upstream = (err as { response?: { data?: unknown } }).response?.data;
+    const step = (err as { ssoStep?: SsoStep }).ssoStep;
     if (status === 403) {
-      return res.status(403).json({ error: "eGov SSO rejected our partner credentials", detail: upstream });
+      return res.status(403).json({
+        error: "eGov SSO rejected our partner credentials",
+        // Which call failed splits the diagnosis: "token" means partner_code/secret or the
+        // exchange_code itself; "profile" means the access token we just minted was refused.
+        step,
+        detail: upstream,
+      });
     }
     if (status === 422) {
-      return res.status(422).json({ error: "This eGovPH sign-in link has expired — please sign in again", detail: upstream });
+      return res.status(422).json({ error: "This eGovPH sign-in link has expired — please sign in again", step, detail: upstream });
     }
     if (status === 429) {
       return res.status(429).json({ error: "eGov API quota exhausted — ask an administrator for a top-up", detail: upstream });
