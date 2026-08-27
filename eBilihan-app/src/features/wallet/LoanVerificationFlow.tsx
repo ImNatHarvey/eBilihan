@@ -16,6 +16,7 @@ import {
   loanOtpConfirm,
   verifyBorrower,
   verifyBorrowerByDetails,
+  seedTestVerification,
   type LoanInput,
 } from "@/api/loans";
 import { buildLoanAgreementPdf } from "@/lib/loanAgreementPdf";
@@ -133,6 +134,29 @@ export function LoanVerificationFlow() {
     setVerifiedName(verdict.borrowerName);
     setStatusNote(null);
     setStep("verified");
+  }
+
+  /**
+   * Test-only shortcut past the identity gate. It goes through `applyVerdict` like the real
+   * verdicts do, so everything downstream — the OTP, the loan, the PDF, the eMessage — is
+   * the same code exercised by a real borrower, not a parallel test path.
+   *
+   * Gated twice over and independently: this call site is stripped from any production
+   * bundle by `import.meta.env.DEV` below, and the route itself does not exist unless the
+   * server runs with ALLOW_TEST_VERIFICATION=true, which Render never sets. Either gate
+   * alone is sufficient.
+   */
+  async function seedTestBorrower() {
+    setFailure(null);
+    try {
+      applyVerdict(await seedTestVerification(), "idle");
+    } catch (err) {
+      setFailure({
+        kind: "unavailable",
+        message: getApiErrorMessage(err, "Seed route is off — set ALLOW_TEST_VERIFICATION=true on the server."),
+      });
+      resetVerification("idle");
+    }
   }
 
   async function startQrVerification() {
@@ -324,6 +348,21 @@ export function LoanVerificationFlow() {
               >
                 <Keyboard className="h-4 w-4" /> QR code won&apos;t scan? Enter details instead
               </Button>
+              {/*
+                Dev builds only. `import.meta.env.DEV` is a literal `false` under
+                `npm run build`, so Vite's dead-code elimination removes this branch and
+                the `seedTestVerification` import with it — the shipped bundle contains no
+                reference to the route at all. Verify with `grep -r seed-verification dist/`.
+              */}
+              {import.meta.env.DEV && (
+                <Button
+                  variant="outline"
+                  className="h-auto whitespace-normal py-2 leading-snug"
+                  onClick={seedTestBorrower}
+                >
+                  DEV: skip verification (fake borrower)
+                </Button>
+              )}
             </>
           )}
 

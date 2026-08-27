@@ -237,11 +237,25 @@ never hardcode one.
     (`Verify Personal Information`)
   - `POST {base}/api/query/qr/check` — QR value only, decode without biometric match
   - `POST {base}/api/query/qr` — QR value + `face_liveness_session_id` (`QR Verify`)
-  - A matched response carries `data.code`. The docs' own examples disagree — QR Verify
-    shows `AAA001`, Verify Personal Information shows `AAA000` — so
-    `server/src/routes/loans.ts` accepts **both** via `MATCHED_CODES`. Narrow that set
-    once the portal's full code list is confirmed. Anything outside it (face mismatch
-    above all) must block the action gating on it, and does.
+  - **The documented response shape is wrong — do not match on it.** The docs show
+    `data.code` as `AAA001` (QR Verify) / `AAA000` (Verify Personal Information). Neither
+    value has ever been observed live. Two runs against the live gateway (2026-08-26):
+
+    |                     | mismatch (other person's ID) | match (own ID + own face) |
+    |---------------------|------------------------------|---------------------------|
+    | `data.code`         | absent                       | `FOJ3128`                 |
+    | `data.verified`     | `false`                      | absent                    |
+    | `meta.result_grade` | `0`                          | `1`                       |
+    | identity fields     | none                         | full PhilSys record       |
+
+    So `server/src/routes/loans.ts` (`recordVerification`) decides from the **observed
+    shape**, not the docs: four conjunctive clauses — `verified !== false`; `result_grade`
+    not a failure (string not beginning `FAILED`, number `>= 1`, `0` a hard fail); `code`
+    a non-empty string (**presence only, never a specific value** — `FOJ3128` proves the
+    vocabulary is larger than documented, so enumerating success codes is impossible); and
+    `full_name` a non-empty string. Every clause is a positive requirement, so an
+    unfamiliar response fails closed. **Do not loosen any clause without a live
+    observation**, and do not reintroduce a matched-code allowlist.
 - **Two separate "Face Liveness" things — do not conflate them:**
   1. **eVerify's own embedded Face Liveness Web SDK** (client-side `<script>` from
      `hackathon-everify-face-liveness.e.gov.ph`, `window.eKYC().start({ pubKey })`) —

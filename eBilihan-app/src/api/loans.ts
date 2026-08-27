@@ -34,6 +34,24 @@ export async function verifyBorrowerByDetails(details: BorrowerDemographics, fac
   return data;
 }
 
+/**
+ * Test-only: mint a verification record for a fictional borrower, so the OTP, loan
+ * creation, the agreement PDF and the eMessage send can be exercised without a real ID, a
+ * real face, and a portal credit each time.
+ *
+ * The server returns the same shape as a real match, so callers can feed it through the
+ * same funnel — there is deliberately no second code path, and the thing under test stays
+ * the real one.
+ *
+ * 404s unless the server runs with ALLOW_TEST_VERIFICATION=true, which is never set on
+ * Render. Call it only from behind `import.meta.env.DEV` so it cannot be reached from a
+ * production build either.
+ */
+export async function seedTestVerification() {
+  const { data } = await api.post<BorrowerVerification>("/loans/dev/seed-verification");
+  return data;
+}
+
 export async function listLoans() {
   const { data } = await api.get<{ data: Loan[] }>("/loans");
   return data.data;
