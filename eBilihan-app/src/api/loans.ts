@@ -70,9 +70,15 @@ export type LoanInput = {
   livenessToken?: string;
 };
 
-/** Sends a confirmation code to the owner's own eGovPH-linked mobile. */
+/**
+ * Sends a confirmation code to the owner's own eGovPH-linked mobile.
+ *
+ * `smsSuppressed` comes back only from a server running with
+ * ALLOW_TEST_VERIFICATION=true, which skips eMessage and prints the code to its console
+ * instead. It is absent in production, so the UI that keys off it renders nothing there.
+ */
 export async function loanOtpStart() {
-  const { data } = await api.post<{ message: string }>("/loans/otp/start");
+  const { data } = await api.post<{ message: string; smsSuppressed?: boolean }>("/loans/otp/start");
   return data;
 }
 

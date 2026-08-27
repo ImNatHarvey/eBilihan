@@ -88,6 +88,12 @@ export function LoanVerificationFlow() {
   const [dueDate, setDueDate] = useState(defaultDueDate());
   const [livenessToken, setLivenessToken] = useState<string | null>(null);
   const [otp, setOtp] = useState("");
+  /**
+   * True only when the server skipped the SMS because it is running in test mode. Kept so
+   * the OTP step can say where the code actually is, rather than pointing at a handset
+   * that was never texted. Always false against production, which never sets the flag.
+   */
+  const [otpSmsSuppressed, setOtpSmsSuppressed] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
 
   /** Classifies anything thrown during verification into exactly one of the three kinds. */
@@ -252,7 +258,8 @@ export function LoanVerificationFlow() {
     setFailure(null);
     setIsBusy(true);
     try {
-      await loanOtpStart();
+      const { smsSuppressed } = await loanOtpStart();
+      setOtpSmsSuppressed(smsSuppressed === true);
       if (tokenOverride) setLivenessToken(tokenOverride);
       setStep("otp");
     } catch (err) {
@@ -458,7 +465,17 @@ export function LoanVerificationFlow() {
 
             {step === "otp" && (
               <>
-                <Label>Enter the 6-digit code sent to your eGovPH mobile number</Label>
+                <Label>
+                  {otpSmsSuppressed
+                    ? "Enter the 6-digit code from the backend console"
+                    : "Enter the 6-digit code sent to your eGovPH mobile number"}
+                </Label>
+                {otpSmsSuppressed && (
+                  <p className="text-sm text-brand-ink/60">
+                    Test mode: no SMS was sent and no credit was spent. The code is printed in
+                    the server terminal.
+                  </p>
+                )}
                 <OtpInput value={otp} onChange={setOtp} />
                 <Button size="lg" onClick={handleConfirmOtp} disabled={otp.length !== 6}>
                   Verify &amp; Create Loan

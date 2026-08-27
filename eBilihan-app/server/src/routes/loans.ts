@@ -439,6 +439,29 @@ router.post("/otp/start", async (req, res) => {
 
   const otp = generateOtp();
   pendingOtps.set(owner.mobile, { otp, expiresAtMs: Date.now() + 5 * 60_000 });
+
+  /**
+   * Test builds print the code instead of texting it.
+   *
+   * `sendSms` is already suppressed under this flag, so without this the OTP would be
+   * generated, stored, and unreachable — the code exists only in `pendingOtps`, and the
+   * sandbox number it would have gone to receives nothing. Printing it is what makes the
+   * rest of the loan flow testable at all.
+   *
+   * The response says plainly that nothing was sent. Reporting "OTP sent to your
+   * registered mobile number" when no message left the building is exactly the kind of
+   * fabricated success this codebase refuses to ship, and it would send a tester to check
+   * a phone that will never ring.
+   */
+  if (config.allowTestVerification) {
+    // eslint-disable-next-line no-console
+    console.warn(`[dev] loan OTP for this session: ${otp} — not sent by SMS, expires in 5 minutes`);
+    return res.json({
+      message: "Test mode: no SMS was sent. The code is printed in the backend console.",
+      smsSuppressed: true,
+    });
+  }
+
   try {
     await sendSms(owner.mobile, `Your eBilihan loan confirmation code is ${otp}. It expires in 5 minutes.`);
     res.json({ message: "OTP sent to your registered mobile number" });
