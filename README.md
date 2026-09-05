@@ -126,7 +126,7 @@ Face Liveness SDK (needs a *public* key). Even `partner_code` is not baked into 
 the app fetches it at runtime from `GET /auth/sso/widget-config`, so rotating a credential is
 a server change rather than an app rebuild and store re-release.
 
-### Sign-in — eGov SSO
+### Sign-in — eGov Single Sign Oauth
 
 ```mermaid
 sequenceDiagram
