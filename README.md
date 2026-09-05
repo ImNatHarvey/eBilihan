@@ -1,4 +1,4 @@
-# eBilihan
+# eBilihan karog
 
 **Where Every Sari-Sari Store Grows Smarter.**
 
