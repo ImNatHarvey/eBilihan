@@ -155,7 +155,7 @@ sequenceDiagram
     App-->>C: Onboarding (first time) or Home
 ```
 
-**No login, no password, no registration screen** — eGovPH's partner requirements ask
+**No login form, no password, no registration screen** — eGovPH's partner requirements ask
 integrated services not to have them, and eBilihan doesn't. Identity fields are read-only.
 
 ### Loan issuance — the identity gate
